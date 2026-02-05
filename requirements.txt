@@ -1,0 +1,8 @@
+requests
+streamlit
+pymupdf
+python-dotenv
+bcrypt
+pandas
+faiss-cpu
+sentence-transformers

@@ -117,6 +117,7 @@ def init_db():
             filename TEXT NOT NULL,
             stored_path TEXT NOT NULL,
             uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            excluded_pages TEXT DEFAULT '',
             FOREIGN KEY(user_id) REFERENCES users(id),
             FOREIGN KEY(subject_id) REFERENCES subjects(id)
         );
@@ -738,3 +739,36 @@ def delete_card(card_id: int, user_id: int) -> bool:
     conn.commit()
     conn.close()
     return True
+
+def update_excluded_pages(file_id: int, excluded: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE uploaded_files SET excluded_pages=? WHERE id=?",
+        (excluded, file_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_excluded_pages_map(file_id: int) -> list[int]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT excluded_pages FROM uploaded_files WHERE id=?", (file_id,))
+    row = cur.fetchone()
+    conn.close()
+
+    if not row or not row[0]:
+        return []
+
+    # parse formats like "1,2,5-8"
+    text = row[0]
+    pages = []
+    for part in text.split(","):
+        part = part.strip()
+        if "-" in part:
+            a, b = part.split("-")
+            pages.extend(range(int(a), int(b) + 1))
+        else:
+            pages.append(int(part))
+    return pages

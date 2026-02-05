@@ -9,8 +9,9 @@ import streamlit as st
 
 import llm_client as llm
 from models import QAItem
-from db import insert_card
+from db import insert_card, get_excluded_pages_map
 
+from rag_store import retrieve
 
 # =========================
 # Helpers for deduplication
@@ -126,7 +127,18 @@ def generate_cards_from_chunk(
     if existing_norm_questions is None:
         existing_norm_questions = []
 
+    # NEW: retrieve relevant context from vector DB
+    retrieved_context = retrieve(subject_id=subject_id,
+                                 user_id=st.session_state.effective_user_id,
+                                 query=chunk_text,
+                                 k=5)
+
+    context_text = "\n\n".join(retrieved_context)
+
     user_prompt = f"""
+    Context (retrieved from knowledge base):
+    \"\"\"{context_text}\"\"\"
+
 Text (from page {page} of {source_pdf}):
 \"\"\"{chunk_text}\"\"\"
 
@@ -251,6 +263,7 @@ def generate_cards_from_pdf_path(
     pdf_name: str,
     subject_id: int,
     max_new_cards: int,
+    file_id: int,
 ) -> int:
     """
     Read a PDF from disk and generate up to max_new_cards cards for the given subject.
@@ -270,11 +283,17 @@ def generate_cards_from_pdf_path(
         normalize_text(c.question) for c in deck if c.subject_id == subject_id
     ]
 
+    excluded_pages = get_excluded_pages_map(file_id)  # you need file_id param in function
+
     for page_info in pages:
         if new_cards_count >= max_new_cards:
             break
 
         page_number = page_info["page"]
+        # SKIP excluded pages
+        if page_number in excluded_pages:
+            continue
+
         text = page_info["text"]
         if not text.strip():
             continue

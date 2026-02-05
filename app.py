@@ -26,6 +26,8 @@ from db import (
     delete_uploaded_file_and_cards,
     delete_card,
     admin_log,
+    update_excluded_pages,
+    get_excluded_pages_map,
 )
 
 from config import UPLOAD_DIR, CUSTOM_CSS
@@ -39,6 +41,9 @@ from card_generation import (
     generate_cards_from_pdf_path,
 )
 from admin_utils import get_username_by_id, delete_subject_and_data
+from rag_store import add_documents
+
+from admin_pages import render_admin_users  # import at top of file
 
 
 def main():
@@ -57,6 +62,7 @@ def main():
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     st.title("📘 AI Learning Assistant – Subjects, PDFs, Flashcards & Quizzes")
 
+
     # Warning banner when impersonating
     if real_user_id != effective_user_id:
         effective_username = get_username_by_id(effective_user_id)
@@ -67,6 +73,10 @@ def main():
 
     # Initialize per-user state (for effective user)
     init_session_state(effective_user_id)
+
+    # Routing: which view to show
+    if "view" not in st.session_state:
+        st.session_state.view = "main"  # default view
 
     # ---------- Sidebar: settings, profile, subjects, manual cards ----------
     with st.sidebar:
@@ -110,6 +120,12 @@ def main():
 
         st.markdown("---")
 
+        # Admin-only link
+        if real_username == "admin":
+            if st.button("🔐 Admin User Management", key="go_admin_users"):
+                st.session_state.view = "admin_users"
+                st.rerun()
+            st.markdown("---")
         # --------------------- SUBJECTS — MAIN SECTION ----------------------
         with st.expander("📚 Subjects (Select or Create)", expanded=True):
             subjects = get_subjects(effective_user_id)
@@ -179,175 +195,17 @@ def main():
 
         st.markdown("---")
         st.info(f"Total cards: **{len(st.session_state.deck)}**")
+    # === ROUTER: decide what to render ===
+    view = st.session_state.get("view", "main")
 
-        # ----------------- ADMIN PANEL (impersonation & user management) -----------------
-        if real_username == "admin":
-            st.markdown("## 🔐 Admin Dashboard")
-
-            conn = get_connection()
-            cur = conn.cursor()
-            cur.execute("SELECT id, username FROM users ORDER BY username")
-            users = cur.fetchall()
-
-            # Impersonation selector
-            st.markdown("### Impersonate user")
-            user_map = {uname: uid for uid, uname in users}
-            if user_map:
-                selected_user_for_imp = st.selectbox(
-                    "Choose user to impersonate",
-                    list(user_map.keys()),
-                    key="imp_user_sel",
-                )
-                if st.button("Switch to this user", key="btn_impersonate"):
-                    target_id = user_map[selected_user_for_imp]
-                    st.session_state.effective_user_id = target_id
-                    st.session_state.pop("deck_user_id", None)
-                    st.success(f"Now impersonating user: {selected_user_for_imp} (id {target_id})")
-                    st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
-            else:
-                st.info("No users found to impersonate.")
-
-            if real_user_id != effective_user_id:
-                if st.button("Stop impersonation (back to admin)", key="stop_imp"):
-                    st.session_state.effective_user_id = real_user_id
-                    st.session_state.pop("deck_user_id", None)
-                    st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
-
-            st.markdown("---")
-            st.markdown("### User management")
-
-            for uid, uname in users:
-                st.markdown(f"#### User ID {uid}: {uname}")
-                col1, col2, col3 = st.columns(3)
-
-                # Rename user
-                with col1:
-                    new_name = st.text_input(
-                        f"Rename {uname}",
-                        value=uname,
-                        key=f"rename_{uid}",
-                    )
-                    if st.button(f"Save username {uid}", key=f"btn_rename_{uid}"):
-                        cur.execute("UPDATE users SET username=? WHERE id=?", (new_name, uid))
-                        conn.commit()
-                        admin_log(real_user_id, uid, f"Renamed user '{uname}' to '{new_name}'")
-                        st.success("Username updated.")
-                        st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
-
-                # Change password
-                with col2:
-                    new_pw = st.text_input(
-                        f"New password for {uname}",
-                        type="password",
-                        key=f"newpw_{uid}",
-                    )
-                    if st.button(f"Change password {uid}", key=f"btn_pw_{uid}"):
-                        if len(new_pw) < 6:
-                            st.error("Password must be at least 6 characters.")
-                        else:
-                            pw_hash = hash_password(new_pw)
-                            cur.execute("UPDATE users SET password_hash=? WHERE id=?", (pw_hash, uid))
-                            conn.commit()
-                            admin_log(real_user_id, uid, "Admin changed user password")
-                            st.success("Password changed.")
-                            st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
-
-                # Delete user
-                with col3:
-                    if uname == "admin":
-                        st.write("(cannot delete admin)")
-                    else:
-                        delete_key = f"delete_user_{uid}"
-                        confirm_key = f"confirm_delete_user_{uid}"
-
-                        if st.button("Delete user", key=delete_key):
-                            st.session_state[confirm_key] = True
-
-                        if st.session_state.get(confirm_key):
-                            st.warning(f"Delete user **{uname}** and all their data?")
-                            c1, c2 = st.columns(2)
-
-                            with c1:
-                                if st.button("Yes, delete", key=f"yes_{delete_key}"):
-                                    # Delete attempts
-                                    cur.execute("DELETE FROM card_attempts WHERE user_id=?", (uid,))
-
-                                    # Delete subjects and related data
-                                    cur.execute("SELECT id FROM subjects WHERE user_id=?", (uid,))
-                                    subj_rows = cur.fetchall()
-                                    subj_ids = [r[0] for r in subj_rows]
-
-                                    if subj_ids:
-                                        placeholders = ",".join("?" for _ in subj_ids)
-                                        # Delete cards for those subjects
-                                        cur.execute(
-                                            f"DELETE FROM cards WHERE subject_id IN ({placeholders})",
-                                            subj_ids,
-                                        )
-                                        # Delete uploaded files for those subjects
-                                        cur.execute(
-                                            f"DELETE FROM uploaded_files "
-                                            f"WHERE subject_id IN ({placeholders}) AND user_id=?",
-                                            (*subj_ids, uid),
-                                        )
-                                        # Delete subjects
-                                        cur.execute(
-                                            f"DELETE FROM subjects WHERE id IN ({placeholders})",
-                                            subj_ids,
-                                        )
-
-                                    # Delete remaining uploaded_files for this user (and physical files)
-                                    cur.execute("SELECT stored_path FROM uploaded_files WHERE user_id=?", (uid,))
-                                    for (stored_path,) in cur.fetchall():
-                                        if stored_path and os.path.exists(stored_path):
-                                            try:
-                                                os.remove(stored_path)
-                                            except OSError:
-                                                pass
-                                    cur.execute("DELETE FROM uploaded_files WHERE user_id=?", (uid,))
-
-                                    # Delete admin logs involving this user
-                                    cur.execute(
-                                        "DELETE FROM admin_logs WHERE admin_id=? OR target_user_id=?",
-                                        (uid, uid),
-                                    )
-
-                                    # Delete user
-                                    cur.execute("DELETE FROM users WHERE id=?", (uid,))
-                                    conn.commit()
-
-                                    admin_log(real_user_id, uid, "Deleted user account")
-                                    st.success("User deleted.")
-                                    st.session_state.pop(confirm_key, None)
-                                    st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
-
-                            with c2:
-                                if st.button("Cancel", key=f"cancel_{delete_key}"):
-                                    st.session_state.pop(confirm_key, None)
-                                    st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
-
-            # Recent admin logs
-            st.markdown("---")
-            st.markdown("### Recent admin actions")
-            cur.execute(
-                """
-                SELECT admin_id, target_user_id, action, timestamp
-                FROM admin_logs
-                ORDER BY id DESC
-                LIMIT 50
-                """
-            )
-            logs = cur.fetchall()
-            conn.close()
-
-            if logs:
-                for admin_id, target_user_id, action, ts in logs:
-                    st.write(
-                        f"[{ts}] Admin {get_username_by_id(admin_id)} → "
-                        f"{get_username_by_id(target_user_id)}: {action}"
-                    )
-            else:
-                st.info("No admin actions recorded yet.")
+    if view == "admin_users":
+        # Guard: only allow real admin
+        if real_username != "admin":
+            st.error("You must be admin to access this page.")
+            st.stop()
+        # Render admin users page
+        render_admin_users(real_user_id)
+        return
 
     # --------------------------- Main layout ---------------------------
     st.markdown(
@@ -360,7 +218,7 @@ def main():
     # convenience alias
     user_id = effective_user_id
 
-    # 1. Upload PDFs & generate (expander)
+    # 1. Upload PDFs & generate (expander) — REWRITTEN
     with st.expander("📥 Manage PDFs & Generate Cards", expanded=False):
         st.subheader("Upload PDFs for the active subject")
 
@@ -371,29 +229,49 @@ def main():
             "Upload one or more PDF files",
             type=["pdf"],
             accept_multiple_files=True,
+            key="uploader_manage_generate"
         )
 
+        # Let the user control the card budget for this run
+        max_cards_input = st.number_input(
+            "Max cards per generation run",
+            min_value=1,
+            max_value=500,
+            value=st.session_state.get("max_cards", 50),
+            step=5,
+            key="max_cards_per_run"
+        )
+        # Persist in session_state (separate key from widget key is OK)
+        st.session_state.max_cards = int(max_cards_input)
+
+        # If user selected files, show a pre-generation "exclude pages" UI per file
         if uploaded_files:
             st.write("Files selected:")
             for f in uploaded_files:
                 st.write(f"- {f.name}")
 
-            max_cards = st.number_input(
-                "Max cards per generation run",
-                min_value=1,
-                max_value=500,
-                value=st.session_state.max_cards,
-                step=5,
-            )
-            st.session_state.max_cards = int(max_cards)
+                # Use TWO KEYS to avoid Streamlit error:
+                # - ui_key: widget's key
+                # - logic_key: your own state for business logic
+                ui_key = f"ui_exclude_pages_{f.name}"
+                logic_key = f"exclude_pre_{f.name}"
 
-            if st.button("🚀 Generate flashcards & quizzes from PDFs") and uploaded_files:
+                # The widget manages ui_key internally; we read its value and copy to logic_key
+                val = st.text_input(
+                    f"Exclude pages BEFORE generation for {f.name} (e.g. 1,2,5-7)",
+                    value=st.session_state.get(logic_key, ""),
+                    key=ui_key
+                )
+                # Store separately (safe because logic_key != ui_key)
+                st.session_state[logic_key] = val
+
+            # Generation button
+            if st.button("🚀 Generate flashcards & quizzes from PDFs", key="btn_generate_from_uploads"):
                 subject_id = st.session_state.get("current_subject_id")
                 if subject_id is None:
                     st.error("You must select a subject before generating cards.")
                 else:
                     max_cards = st.session_state.get("max_cards", 50)
-
                     with st.spinner(f"Reading PDFs and generating up to {max_cards} cards..."):
                         deck: List[QAItem] = st.session_state.deck
                         current_id = max((c.id for c in deck), default=0) + 1
@@ -401,7 +279,9 @@ def main():
 
                         # Existing normalized questions for this subject (for dedup)
                         existing_norm_questions = [
-                            normalize_text(c.question) for c in deck if c.subject_id == subject_id
+                            normalize_text(c.question)
+                            for c in deck
+                            if c.subject_id == subject_id
                         ]
 
                         for file in uploaded_files:
@@ -411,38 +291,57 @@ def main():
                             pdf_name = file.name
                             file_bytes = file.read()
 
-                            # Save file to disk & record in DB
+                            # 1) Save PDF to disk
                             user_folder = UPLOAD_DIR / f"user_{user_id}" / f"subject_{subject_id}"
                             user_folder.mkdir(parents=True, exist_ok=True)
                             stored_path = user_folder / pdf_name
-
                             with open(stored_path, "wb") as f_out:
                                 f_out.write(file_bytes)
 
-                            insert_uploaded_file(user_id, subject_id, pdf_name, str(stored_path))
-                            if real_user_id != user_id:
-                                admin_log(real_user_id, user_id, f"Uploaded file {pdf_name}")
+                            # 2) Insert metadata FIRST so we get file_id
+                            file_id = insert_uploaded_file(
+                                user_id,
+                                subject_id,
+                                pdf_name,
+                                str(stored_path)
+                            )
 
+                            # 3) Persist pre-generation exclusions provided by the user
+                            pre_key = f"exclude_pre_{pdf_name}"
+                            user_excluded_text = (st.session_state.get(pre_key, "") or "").strip()
+                            if user_excluded_text:
+                                # Save in DB; your DB layer parses and stores ranges
+                                update_excluded_pages(file_id, user_excluded_text)
+
+                            # 4) Load excluded pages map (int set) for this file_id
+                            excluded_pages = get_excluded_pages_map(file_id)
+
+                            # 5) Extract pages and generate cards while skipping excluded ones
                             pages = extract_pages_from_pdf_bytes(file_bytes)
-
+                            rag_chunks = []
                             for page_info in pages:
                                 if new_cards_count >= max_cards:
                                     break
 
                                 page_number = page_info["page"]
+
+                                # Skip excluded pages
+                                if page_number in excluded_pages:
+                                    continue
+
                                 text = page_info["text"]
                                 if not text.strip():
                                     continue
 
+                                # Split into chunks and collect for RAG
                                 chunks = chunk_page_text(text)
+                                rag_chunks.extend(chunks)
 
+                                # Generate cards per chunk (respecting budget)
                                 for chunk in chunks:
                                     if new_cards_count >= max_cards:
                                         break
-
-                                    remaining = max_cards - new_cards_count
-                                    per_chunk_limit = min(7, remaining)
-
+                                    per_chunk_limit = min(7, max_cards - new_cards_count)
                                     new_items = generate_cards_from_chunk(
                                         chunk_text=chunk,
                                         page=page_number,
@@ -453,29 +352,31 @@ def main():
                                         existing_norm_questions=existing_norm_questions,
                                     )
 
-                                    if len(new_items) > remaining:
-                                        new_items = new_items[:remaining]
-
+                                    # Persist cards
                                     for card in new_items:
                                         insert_card(card)
                                         deck.append(card)
-
                                     new_cards_count += len(new_items)
                                     current_id += len(new_items)
+
+                            # 6) Index allowed chunks in RAG (after filtering)
+                            if rag_chunks:
+                                add_documents(user_id, subject_id, rag_chunks)
 
                         st.success(
                             f"Generation complete! Added {new_cards_count} new cards. "
                             f"Your deck now has {len(st.session_state.deck)} cards."
                         )
 
+                        # Impersonation log if applicable
                         if real_user_id != user_id:
                             admin_log(
                                 real_user_id,
                                 user_id,
-                                f"Generated {new_cards_count} cards from uploaded PDFs",
+                                f"Generated {new_cards_count} cards from uploaded PDFs (with pre-gen exclusions)"
                             )
 
-    # 1b. Uploaded files & content management
+    # 1b. Uploaded files & content management — FULLY REWRITTEN
     with st.expander("📂 Uploaded files & content management", expanded=False):
         current_subject_id = st.session_state.get("current_subject_id")
 
@@ -483,6 +384,7 @@ def main():
             st.info("Select a subject in the sidebar to see its uploaded files.")
         else:
             st.subheader("Uploaded PDFs for this subject")
+
             files = get_uploaded_files(user_id, current_subject_id)
 
             if not files:
@@ -494,93 +396,170 @@ def main():
                     max_value=500,
                     value=50,
                     step=5,
-                    key="max_new_cards_per_file",
+                    key="manage_max_new_cards_per_file"
                 )
 
                 for fmeta in files:
+                    file_id = fmeta["id"]
+                    filename = fmeta["filename"]
+                    stored_path = fmeta["stored_path"]
+
                     col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 2, 2])
 
+                    # ----- FILE NAME + Upload time -----
                     with col1:
-                        st.write(f"**{fmeta['filename']}**")
+                        st.write(f"**{filename}**")
                         st.caption(f"Uploaded at: {fmeta['uploaded_at']}")
 
+                    # ----- CARD COUNT FOR THIS FILE -----
                     with col2:
                         count = sum(
-                            1
-                            for c in st.session_state.deck
+                            1 for c in st.session_state.deck
                             if c.subject_id == current_subject_id
-                            and c.source_pdf == fmeta["filename"]
+                            and c.source_pdf == filename
                         )
-                        st.write(f"Cards from this file: {count}")
+                        st.write(f"Cards: {count}")
 
+                    # ----- EXCLUDED PAGES UI (safe dual-key pattern) -----
                     with col3:
-                        if st.button("Generate more questions", key=f"regen_{fmeta['id']}"):
+                        # DB value as displayed default
+                        current_excl_str = fmeta.get("excluded_pages", "") or ""
+
+                        # Widget key (UI)
+                        ui_key = f"ui_file_excl_{file_id}"
+                        # Logic key (separate internal value)
+                        logic_key = f"file_excl_logic_{file_id}"
+
+                        val = st.text_input(
+                            f"Exclude pages (e.g. 1,2,4-6)",
+                            value=current_excl_str if logic_key not in st.session_state else st.session_state[
+                                logic_key],
+                            key=ui_key
+                        )
+
+                        # Save the mirrored internal logic key
+                        st.session_state[logic_key] = val
+
+                        if st.button("Save exclusions", key=f"save_excl_{file_id}"):
+                            update_excluded_pages(file_id, val)
+                            st.success("Saved excluded pages")
+                            st.rerun()
+
+                    # ----- REGENERATE QUESTIONS BUTTON -----
+                    with col3:
+                        pass  # Already used above but layout is okay
+
+                    with col4:
+                        if st.button("Generate more questions", key=f"regen_more_{file_id}"):
+                            # 1. Load PDF bytes
+                            try:
+                                with open(stored_path, "rb") as pdf_file:
+                                    file_bytes = pdf_file.read()
+                            except FileNotFoundError:
+                                st.error("PDF file not found on disk.")
+                                continue
+
+                            # 2. Parse exclusions (from DB)
+                            excluded_pages = get_excluded_pages_map(file_id)
+
+                            # 3. Extract + chunk text, skipping excluded pages
+                            pages = extract_pages_from_pdf_bytes(file_bytes)
+                            all_chunks = []
+
+                            for page_info in pages:
+                                page_num = page_info["page"]
+
+                                if page_num in excluded_pages:
+                                    continue
+
+                                text = page_info["text"]
+                                if not text.strip():
+                                    continue
+
+                                chunks = chunk_page_text(text)
+                                all_chunks.extend(chunks)
+
+                            # 4. Add chunks to RAG
+                            if all_chunks:
+                                add_documents(
+                                    user_id=user_id,
+                                    subject_id=current_subject_id,
+                                    docs=all_chunks
+                                )
+
+                            # 5. Generate new cards (your existing utility)
                             added = generate_cards_from_pdf_path(
-                                pdf_path=fmeta["stored_path"],
-                                pdf_name=fmeta["filename"],
+                                pdf_path=stored_path,
+                                pdf_name=filename,
                                 subject_id=current_subject_id,
                                 max_new_cards=max_new_cards,
+                                file_id=file_id
                             )
-                            st.success(f"Added {added} new cards from {fmeta['filename']}.")
+
+                            st.success(f"Added {added} new cards from {filename}.")
+
                             if real_user_id != user_id:
                                 admin_log(
                                     real_user_id,
                                     user_id,
-                                    f"Generated {added} new cards from {fmeta['filename']}",
+                                    f"Generated {added} new cards from {filename} (via management section)"
                                 )
-                            st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
 
-                    with col4:
-                        # Download button
+                            st.rerun()
+
+                    # ----- DOWNLOAD PDF BUTTON -----
+                    with col5:
                         try:
-                            with open(fmeta["stored_path"], "rb") as f_in:
+                            with open(stored_path, "rb") as f_in:
                                 st.download_button(
                                     "Download",
                                     data=f_in,
-                                    file_name=fmeta["filename"],
+                                    file_name=filename,
                                     mime="application/pdf",
-                                    key=f"dl_{fmeta['id']}",
+                                    key=f"dl_file_{file_id}",
                                 )
                         except FileNotFoundError:
                             st.error("File missing on disk.")
 
+                    # ----- DELETE PDF AND ITS CARDS -----
                     with col5:
-                        delete_key = f"del_file_{fmeta['id']}"
-                        confirm_key = f"confirm_del_file_{fmeta['id']}"
+                        delete_key = f"del_file_{file_id}"
+                        confirm_key = f"confirm_del_file_{file_id}"
 
                         if st.button("Delete file", key=delete_key):
                             st.session_state[confirm_key] = True
 
                         if st.session_state.get(confirm_key):
-                            st.warning(f"Delete **{fmeta['filename']}** and all its cards?")
+                            st.warning(f"Delete **{filename}** and all its cards?")
                             c1, c2 = st.columns(2)
 
                             with c1:
                                 if st.button("Yes, delete", key=f"yes_{delete_key}"):
-                                    stored_path = delete_uploaded_file_and_cards(fmeta["id"], user_id)
-                                    if stored_path and os.path.exists(stored_path):
-                                        try:
-                                            os.remove(stored_path)
-                                        except OSError:
-                                            st.warning(
-                                                "File metadata deleted, but physical file could not be removed."
-                                            )
+                                    deleted_path = delete_uploaded_file_and_cards(file_id, user_id)
 
-                                    st.success(f"Deleted {fmeta['filename']} and its cards.")
+                                    # Remove from disk
+                                    if deleted_path and os.path.exists(deleted_path):
+                                        try:
+                                            os.remove(deleted_path)
+                                        except OSError:
+                                            st.warning("Metadata deleted but file could not be removed.")
+
+                                    st.success(f"Deleted {filename} and its cards.")
+
                                     if real_user_id != user_id:
                                         admin_log(
                                             real_user_id,
                                             user_id,
-                                            f"Deleted file {fmeta['filename']} and its cards",
+                                            f"Deleted file {filename} and its cards"
                                         )
+
                                     st.session_state.pop(confirm_key, None)
-                                    st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
+                                    st.rerun()
 
                             with c2:
                                 if st.button("Cancel", key=f"cancel_{delete_key}"):
                                     st.session_state.pop(confirm_key, None)
-                                    st.experimental_rerun() if hasattr(st, "experimental_rerun") else st.rerun()
-
+                                    st.rerun()
     # ------------------------- Study Area -------------------------
     st.header("🎯 Study Area")
 
@@ -598,6 +577,9 @@ def main():
     # ---------- Flashcards Tab (SRS) ----------
     with tab_flashcards:
         due_cards = get_due_cards(current_subject_id, limit=100)
+
+        # Filter out multiple‑choice cards, because they already show on quiz.
+        due_cards = [c for c in due_cards if c.card_type != "multiple_choice"]
 
         if not due_cards:
             st.success("🎉 No cards due right now for this subject!")

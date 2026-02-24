@@ -1,11 +1,9 @@
 import json
 import requests
 import os
-from dotenv import load_dotenv
+import streamlit as st
 
-load_dotenv()
-
-OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
+OLLAMA_API_KEY = st.secrets["OLLAMA_API_KEY"]
 OLLAMA_BASE_URL = "https://ollama.com"
 
 headers = {

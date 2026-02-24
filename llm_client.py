@@ -1,13 +1,14 @@
 import json
 import requests
 import os
+import streamlit as st
 
-os.environ["OLLAMA_API_KEY"] = "8ef3cb30d6494a059dfae9c8830e69c8.5HQqCZoT27jrEdEFmcrm4rsl"  # Replace with your Ollama Cloud API key
+OLLAMA_API_KEY = st.secrets["OLLAMA_API_KEY"]
 OLLAMA_BASE_URL = "https://ollama.com"
 
 headers = {
     "Content-Type": "application/json",
-    "Authorization": f"Bearer {os.environ['OLLAMA_API_KEY']}"
+    "Authorization": f"Bearer {OLLAMA_API_KEY}"
 }
 
 # ============================================

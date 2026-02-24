@@ -1,13 +1,16 @@
 import json
 import requests
 import os
+from dotenv import load_dotenv
 
-os.environ["OLLAMA_API_KEY"] = "8ef3cb30d6494a059dfae9c8830e69c8.5HQqCZoT27jrEdEFmcrm4rsl"  # Replace with your Ollama Cloud API key
+load_dotenv()
+
+OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
 OLLAMA_BASE_URL = "https://ollama.com"
 
 headers = {
     "Content-Type": "application/json",
-    "Authorization": f"Bearer {os.environ['OLLAMA_API_KEY']}"
+    "Authorization": f"Bearer {OLLAMA_API_KEY}"
 }
 
 # ============================================

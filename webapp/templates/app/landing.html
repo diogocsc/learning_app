@@ -1,0 +1,55 @@
+{% extends "layout.html" %}
+{% block content %}
+  <div class="row g-3 align-items-stretch">
+    <div class="col-lg-7">
+      <div class="card shadow-sm h-100">
+        <div class="card-body p-4 p-md-5">
+          <div class="text-muted small font-mono mb-2">AI Learning Assistant</div>
+          <h1 class="display-6 mb-3">Turn PDFs into a study system.</h1>
+          <p class="text-muted mb-4" style="max-width: 62ch;">
+            Upload a PDF, generate flashcards and quizzes, then review with spaced repetition.
+            Keep your progress per subject, and get exercise ideas from your companion.
+          </p>
+
+          <div class="d-flex flex-wrap gap-2">
+            {% if user %}
+              <a class="btn btn-primary" href="{{ url_for('app.dashboard') }}">Go to dashboard</a>
+              <a class="btn btn-outline-secondary" href="{{ url_for('app.dashboard') }}">Open workspace</a>
+              <a class="btn btn-outline-secondary" href="{{ url_for('app.companion') }}">Companion</a>
+            {% else %}
+              <a class="btn btn-primary" href="{{ url_for('auth.login') }}">Log in</a>
+              <a class="btn btn-outline-secondary" href="{{ url_for('auth.register') }}">Create account</a>
+            {% endif %}
+          </div>
+
+          <div class="mt-4 small text-muted">
+            Tip: for best results, generate ~30–80 cards per subject and review daily.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-5">
+      <div class="card shadow-sm h-100">
+        <div class="card-body p-4 p-md-5">
+          <h2 class="h5 mb-3">What you can do</h2>
+          <div class="vstack gap-3">
+            <div class="border rounded p-3">
+              <div class="fw-semibold">PDF → Cards</div>
+              <div class="text-muted small">Balanced generation across long documents.</div>
+            </div>
+            <div class="border rounded p-3">
+              <div class="fw-semibold">Study (SRS)</div>
+              <div class="text-muted small">Grade recall 0–5 and let the schedule adapt.</div>
+            </div>
+            <div class="border rounded p-3">
+              <div class="fw-semibold">Companion</div>
+              <div class="text-muted small">Ask for exercises and explanations grounded in your subject.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+

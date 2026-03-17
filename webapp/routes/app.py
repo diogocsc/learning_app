@@ -30,6 +30,7 @@ from webapp.services.generation import generate_cards_from_pdf_bytes, normalize_
 from webapp.services.jobs import create_job, get_job, run_job, update_job
 from webapp.services.companion import companion_reply
 from webapp.services.markdown_render import render_markdown_safe
+from webapp.services.subjects import delete_subject_for_user
 
 bp = Blueprint("app", __name__)
 
@@ -55,9 +56,8 @@ def _companion_messages() -> list[dict]:
 @bp.get("/")
 def index():
     u = get_session_user()
-    if u is None:
-        return redirect(url_for("auth.login"))
-    return redirect(url_for("app.dashboard"))
+    csrf = ensure_csrf_token()
+    return render_template("app/landing.html", csrf_token=csrf, user=u)
 
 
 @bp.get("/dashboard")
@@ -67,12 +67,18 @@ def dashboard():
     assert u is not None
     csrf = ensure_csrf_token()
     subjects = get_subjects(u.effective_user_id)
+    subject_id = _active_subject_id()
+    files = get_uploaded_files(u.effective_user_id, subject_id) if subject_id else []
+    due_cards = get_due_cards(subject_id, limit=200) if subject_id else []
+    due_cards = [c for c in due_cards if c.card_type != "multiple_choice"]
     return render_template(
-        "app/dashboard.html",
+        "app/workspace.html",
         csrf_token=csrf,
         user=u,
         subjects=subjects,
-        current_subject_id=_active_subject_id(),
+        current_subject_id=subject_id,
+        files=files,
+        due_count=len(due_cards),
     )
 
 
@@ -82,7 +88,7 @@ def subjects_select():
     validate_csrf()
     sid = request.form.get("subject_id")
     session["current_subject_id"] = int(sid) if sid else None
-    return redirect(url_for("app.subject"))
+    return redirect(url_for("app.dashboard"))
 
 
 @bp.post("/subjects/create")
@@ -101,29 +107,40 @@ def subjects_create():
     # select it
     session["current_subject_id"] = get_subject_id(name, u.effective_user_id)
     flash(f"Subject '{name}' created.", "success")
-    return redirect(url_for("app.subject"))
+    return redirect(url_for("app.dashboard"))
+
+
+@bp.post("/subjects/delete")
+@login_required
+def subjects_delete():
+    validate_csrf()
+    u = get_session_user()
+    assert u is not None
+    subject_id = int(request.form.get("subject_id") or 0)
+    if subject_id <= 0:
+        return redirect(url_for("app.dashboard"))
+
+    ok = delete_subject_for_user(subject_id=subject_id, user_id=u.effective_user_id)
+    if not ok:
+        flash("Subject not found.", "danger")
+        return redirect(url_for("app.dashboard"))
+
+    # Clear active subject if it was deleted
+    if _active_subject_id() == subject_id:
+        session["current_subject_id"] = None
+
+    if u.is_impersonating:
+        admin_log(u.real_user_id, u.effective_user_id, f"Deleted subject id={subject_id} and its data")
+
+    flash("Subject deleted.", "success")
+    return redirect(url_for("app.dashboard"))
 
 
 @bp.get("/subject")
 @login_required
 def subject():
-    u = get_session_user()
-    assert u is not None
-    csrf = ensure_csrf_token()
-    subject_id = _active_subject_id()
-    subjects = get_subjects(u.effective_user_id)
-    files = get_uploaded_files(u.effective_user_id, subject_id) if subject_id else []
-    due_cards = get_due_cards(subject_id, limit=200) if subject_id else []
-    due_cards = [c for c in due_cards if c.card_type != "multiple_choice"]
-    return render_template(
-        "app/subject.html",
-        csrf_token=csrf,
-        user=u,
-        subjects=subjects,
-        current_subject_id=subject_id,
-        files=files,
-        due_count=len(due_cards),
-    )
+    # Compatibility route (old links)
+    return redirect(url_for("app.dashboard"))
 
 
 @bp.post("/uploads/add")

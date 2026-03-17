@@ -16,6 +16,15 @@
             </select>
           </form>
 
+          {% if current_subject_id %}
+            <form method="post" action="{{ url_for('app.subjects_delete') }}" class="mb-3"
+                  onsubmit="return confirm('Delete this subject and ALL its cards, attempts, and uploaded files?')">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="subject_id" value="{{ current_subject_id }}">
+              <button class="btn btn-outline-danger w-100" type="submit">Delete selected subject</button>
+            </form>
+          {% endif %}
+
           <form method="post" action="{{ url_for('app.subjects_create') }}">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <label class="form-label">Create new subject</label>

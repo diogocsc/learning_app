@@ -53,13 +53,35 @@ pip install -r requirements.txt
 
 ### Configuration
 
-Create a `.streamlit/secrets.toml` file (never commit this):
+#### Flask (recommended)
+
+Create a `.env` file (never commit this). You can start from `.env.example`:
+
+```bash
+cp .env.example .env
+```
+
+At minimum, set:
+- `FLASK_SECRET_KEY`
+- `OLLAMA_API_KEY`
+
+#### Streamlit (legacy)
+
+If you're still running the Streamlit app, create a `.streamlit/secrets.toml` file (never commit this):
 
 ```toml
 OLLAMA_API_KEY = "your_ollama_api_key_here"
 ```
 
 ### Run locally
+
+#### Flask
+
+```bash
+python flask_app.py
+```
+
+#### Streamlit
 
 ```bash
 streamlit run app.py
@@ -69,7 +91,7 @@ streamlit run app.py
 
 ```bash
 docker build -t learning-app .
-docker run -p 8501:8501 learning-app
+docker run -p 5000:5000 --env-file .env learning-app
 ```
 
 ---

@@ -1,0 +1,83 @@
+{% extends "layout.html" %}
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+    <div>
+      <h1 class="h4 mb-1">Progress</h1>
+      <div class="text-muted small">Accuracy: <strong>{{ "%.1f"|format(accuracy) }}%</strong></div>
+    </div>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary" href="{{ url_for('app.subject') }}">Back to subject</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('app.study') }}">Study</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('app.quiz') }}">Quiz</a>
+    </div>
+  </div>
+
+  <div class="row g-3">
+    <div class="col-lg-4">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <div class="d-flex justify-content-between">
+            <div>
+              <div class="text-muted small">Total Attempts</div>
+              <div class="h4">{{ total_attempts }}</div>
+            </div>
+            <div>
+              <div class="text-muted small">Correct</div>
+              <div class="h4">{{ correct_attempts }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-lg-8">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h2 class="h6 mb-3">Card performance</h2>
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Type</th>
+                  <th>Question</th>
+                  <th>Attempts</th>
+                  <th>Correct</th>
+                  <th>Acc%</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in stats_rows %}
+                  <tr>
+                    <td class="text-muted">{{ row.card.id }}</td>
+                    <td><span class="badge text-bg-light">{{ row.card.card_type }}</span></td>
+                    <td style="max-width: 520px;">
+                      <div class="text-truncate" title="{{ row.card.question }}">{{ row.card.question }}</div>
+                    </td>
+                    <td>{{ row.attempts }}</td>
+                    <td>{{ row.correct }}</td>
+                    <td>
+                      {% if row.accuracy is none %}
+                        —
+                      {% else %}
+                        {{ "%.0f"|format(row.accuracy) }}%
+                      {% endif %}
+                    </td>
+                    <td class="text-end">
+                      <form method="post" action="{{ url_for('app.cards_delete') }}" class="m-0" onsubmit="return confirm('Delete card #{{ row.card.id }}?')">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="card_id" value="{{ row.card.id }}">
+                        <button class="btn btn-sm btn-outline-danger" type="submit">Delete</button>
+                      </form>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+

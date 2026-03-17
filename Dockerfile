@@ -19,11 +19,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ========= 2) Create app user & directories =========
 WORKDIR /app
 
-# Create streamlituser with uid 1000 IF it doesn't already exist
-RUN id -u streamlituser >/dev/null 2>&1 || useradd -m -u 1000 streamlituser
+# Create appuser with uid 1000 IF it doesn't already exist
+RUN id -u appuser >/dev/null 2>&1 || useradd -m -u 1000 appuser
 
-# Ensure /app and /app/data exist and are owned by streamlituser
-RUN mkdir -p /app/data && chown -R streamlituser:streamlituser /app
+# Ensure /app and /app/data exist and are owned by appuser
+RUN mkdir -p /app/data && chown -R appuser:appuser /app
 
 # ========= 3) Install Python deps (cached layer) =========
 # Copy only requirements first to leverage Docker layer caching
@@ -35,19 +35,22 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY . /app
 
 # Fix ownership so non-root user can access everything
-RUN chown -R streamlituser:streamlituser /app
+RUN chown -R appuser:appuser /app
 
 # Now drop privileges: all subsequent commands & the container runtime
-# will run as streamlituser
-USER streamlituser
+# will run as appuser
+USER appuser
 
-# ========= 5) Streamlit config via env vars =========
-ENV STREAMLIT_SERVER_PORT=8501 \
-    STREAMLIT_SERVER_HEADLESS=true \
-    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+# ========= 5) Flask config via env vars =========
+# You should set these at runtime:
+# - FLASK_SECRET_KEY
+# - OLLAMA_API_KEY
+# Optional:
+# - MAX_UPLOAD_BYTES
+ENV PYTHONUNBUFFERED=1
 
 # Expose internal port
-EXPOSE 8501
+EXPOSE 5000
 
-# ========= 6) Start Streamlit =========
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# ========= 6) Start Flask =========
+CMD ["python", "flask_app.py"]

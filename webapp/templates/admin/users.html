@@ -1,0 +1,105 @@
+{% extends "layout.html" %}
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+    <div>
+      <h1 class="h4 mb-1">Admin · Users</h1>
+      <div class="text-muted small">Manage users, impersonation, and audit logs.</div>
+    </div>
+    <div class="d-flex gap-2">
+      {% if user.is_impersonating %}
+        <form method="post" action="{{ url_for('admin.users_stop_impersonate') }}" class="m-0">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="btn btn-warning" type="submit">Stop impersonating</button>
+        </form>
+      {% endif %}
+      <a class="btn btn-outline-secondary" href="{{ url_for('app.dashboard') }}">Back to app</a>
+    </div>
+  </div>
+
+  <div class="row g-3">
+    <div class="col-lg-7">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h2 class="h6 mb-3">All users</h2>
+          <div class="vstack gap-3">
+            {% for uid, uname in users %}
+              <div class="border rounded p-3 bg-white">
+                <div class="d-flex justify-content-between flex-wrap gap-2">
+                  <div class="fw-semibold">#{{ uid }} · {{ uname }}</div>
+                  <div class="d-flex gap-2">
+                    {% if uname != "admin" %}
+                      <form method="post" action="{{ url_for('admin.users_impersonate') }}" class="m-0">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <input type="hidden" name="target_user_id" value="{{ uid }}">
+                        <button class="btn btn-sm btn-outline-warning" type="submit">Impersonate</button>
+                      </form>
+                    {% endif %}
+                  </div>
+                </div>
+
+                <div class="row g-2 mt-2">
+                  <div class="col-md-6">
+                    <form method="post" action="{{ url_for('admin.users_rename') }}">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                      <input type="hidden" name="user_id" value="{{ uid }}">
+                      <label class="form-label small mb-1">Rename</label>
+                      <div class="input-group">
+                        <input class="form-control form-control-sm" name="new_username" value="{{ uname }}" required>
+                        <button class="btn btn-sm btn-outline-primary" type="submit">Save</button>
+                      </div>
+                    </form>
+                  </div>
+                  <div class="col-md-6">
+                    <form method="post" action="{{ url_for('admin.users_password') }}">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                      <input type="hidden" name="user_id" value="{{ uid }}">
+                      <label class="form-label small mb-1">Set password</label>
+                      <div class="input-group">
+                        <input class="form-control form-control-sm" name="new_password" type="password" placeholder="New password">
+                        <button class="btn btn-sm btn-outline-primary" type="submit">Update</button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+
+                <div class="mt-2">
+                  {% if uname == "admin" %}
+                    <span class="text-muted small">(cannot delete admin)</span>
+                  {% else %}
+                    <form method="post" action="{{ url_for('admin.users_delete') }}" class="m-0" onsubmit="return confirm('Delete user {{ uname }} and ALL their data?')">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                      <input type="hidden" name="user_id" value="{{ uid }}">
+                      <button class="btn btn-sm btn-outline-danger" type="submit">Delete user</button>
+                    </form>
+                  {% endif %}
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-5">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h2 class="h6 mb-3">Recent admin logs</h2>
+          {% if not logs %}
+            <div class="text-muted">No logs yet.</div>
+          {% else %}
+            <div class="list-group">
+              {% for l in logs %}
+                <div class="list-group-item">
+                  <div class="small text-muted">{{ l.timestamp }}</div>
+                  <div class="small">admin #{{ l.admin_id }} → user #{{ l.target_user_id }}</div>
+                  <div>{{ l.action }}</div>
+                </div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+

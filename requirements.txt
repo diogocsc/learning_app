@@ -6,3 +6,6 @@ bcrypt
 pandas
 faiss-cpu
 sentence-transformers
+flask
+markdown
+bleach

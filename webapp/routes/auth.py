@@ -124,6 +124,7 @@ def register_post():
     session["reg_rate_attempts"] = attempts
 
     username = (request.form.get("username") or "").strip()
+    email = (request.form.get("email") or "").strip()
     pw1 = request.form.get("password") or ""
     pw2 = request.form.get("password2") or ""
     selected = request.form.get("captcha_selected") or ""
@@ -138,13 +139,17 @@ def register_post():
         flash("Please use a password with at least 6 characters.", "danger")
         return redirect(url_for("auth.register"))
 
+    if email and ("@" not in email or "." not in email):
+        flash("Please enter a valid email (or leave it blank).", "danger")
+        return redirect(url_for("auth.register"))
+
     correct = session.get("captcha_correct_emoji")
     if not selected or selected != correct:
         flash("Human verification failed. Please try again.", "danger")
         _captcha_new()
         return redirect(url_for("auth.register"))
 
-    ok = create_user(username, hash_password(pw1))
+    ok = create_user(username, hash_password(pw1), email=email or None)
     if not ok:
         flash("Username already exists. Please choose another one.", "danger")
         _captcha_new()

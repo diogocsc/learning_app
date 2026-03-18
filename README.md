@@ -81,6 +81,14 @@ OLLAMA_API_KEY = "your_ollama_api_key_here"
 python flask_app.py
 ```
 
+#### Weekly email reminders (optional)
+
+Configure SMTP in `.env` (see `.env.example`), then schedule this script to run hourly (cron/Task Scheduler):
+
+```bash
+python scripts/send_weekly_emails.py
+```
+
 #### Streamlit
 
 ```bash

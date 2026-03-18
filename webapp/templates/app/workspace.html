@@ -19,6 +19,80 @@
     </div>
   </div>
 
+  {% if game %}
+    <div class="row g-3 mb-3">
+      <div class="col-lg-6">
+        <div class="card shadow-sm">
+          <div class="card-body">
+            <div class="d-flex justify-content-between align-items-center">
+              <div>
+                <div class="text-muted small">Daily goal</div>
+                <div class="fw-semibold">Attempts today: {{ game.attempts_today }} / {{ game.goal_attempts }}</div>
+                <div class="text-muted small">XP today: {{ game.xp_today }} · Correct: {{ game.correct_today }}</div>
+              </div>
+              <div class="text-end">
+                <div class="badge text-bg-light font-mono">🔥 {{ game.streak }} streak</div>
+              </div>
+            </div>
+            <div class="progress mt-3">
+              {% set pct = (100 * game.attempts_today / game.goal_attempts) if game.goal_attempts else 0 %}
+              <div class="progress-bar" style="width: {{ 100 if pct>100 else pct }}%"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-6">
+        <div class="card shadow-sm">
+          <div class="card-body">
+            <div class="text-muted small">Current level</div>
+            <div class="fw-semibold">Level {{ game.level }} · {{ game.xp }} XP</div>
+            {% if game.subject and current_subject_id %}
+              <div class="text-muted small mt-2">Subject level</div>
+              <div class="fw-semibold">Level {{ game.subject.level }} · {{ game.subject.xp }} XP</div>
+              <div class="text-muted small mt-2">Subject mastery</div>
+              <div class="fw-semibold">{{ game.subject.mastery_pct }}% · {{ game.subject.mastered_cards }}/{{ game.subject.total_cards }} cards</div>
+              <div class="progress mt-2">
+                <div class="progress-bar" style="width: {{ game.subject.mastery_pct }}%"></div>
+              </div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+
+  {% if achievements_catalog and earned %}
+    <div class="card shadow-sm mb-3">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-center">
+          <div>
+            <div class="text-muted small">Badges & achievements</div>
+            <div class="fw-semibold">Unlock rewards by showing up and staying accurate.</div>
+          </div>
+        </div>
+        <div class="row g-2 mt-2">
+          {% for a in achievements_catalog %}
+            {% set earned_now = (a.scope == 'user' and a.code in earned.user) or (a.scope == 'subject' and a.code in earned.subject) %}
+            <div class="col-12 col-md-6 col-lg-4">
+              <div class="border rounded p-3 {% if earned_now %}bg-white{% else %}bg-light{% endif %}">
+                <div class="d-flex justify-content-between">
+                  <div class="fw-semibold">{{ a.icon }} {{ a.name }}</div>
+                  {% if earned_now %}
+                    <span class="badge text-bg-light font-mono">earned</span>
+                  {% else %}
+                    <span class="badge text-bg-light font-mono">locked</span>
+                  {% endif %}
+                </div>
+                <div class="text-muted small mt-1">{{ a.description }}</div>
+                <div class="text-muted small font-mono mt-1">{{ a.scope }}</div>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  {% endif %}
+
   <div class="row g-3">
     <div class="col-lg-4">
       <div class="card shadow-sm">

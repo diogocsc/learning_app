@@ -23,6 +23,9 @@ from db import (
     delete_card,
     admin_log,
     get_connection,
+    get_user_email,
+    get_user_prefs,
+    update_user_prefs,
 )
 from webapp.services.csrf import ensure_csrf_token, validate_csrf
 from webapp.services.session import login_required, get_session_user
@@ -31,6 +34,8 @@ from webapp.services.jobs import create_job, get_job, run_job, update_job
 from webapp.services.companion import companion_reply
 from webapp.services.markdown_render import render_markdown_safe
 from webapp.services.subjects import delete_subject_for_user
+from webapp.services.emailer import send_achievement_email
+from webapp.services.achievements_catalog import ACHIEVEMENTS
 
 bp = Blueprint("app", __name__)
 
@@ -352,8 +357,10 @@ def study_grade():
     card_id = int(request.form.get("card_id") or 0)
     quality = int(request.form.get("quality") or 0)
     is_correct = quality >= 3
-    record_attempt(card_id, subject_id, u.effective_user_id, is_correct, quality)
+    newly_earned = record_attempt(card_id, subject_id, u.effective_user_id, is_correct, quality)
     update_card_schedule(card_id, quality)
+
+    _maybe_send_achievement_email(u, newly_earned)
 
     session["show_answer"] = False
     session["srs_index"] = int(session.get("srs_index") or 0) + 1
@@ -459,9 +466,30 @@ def quiz_check():
         is_correct = user_answer.lower() == correct_answer.lower()
 
     quality = 4 if is_correct else 2
-    record_attempt(card_id, subject_id, u.effective_user_id, is_correct, quality)
+    newly_earned = record_attempt(card_id, subject_id, u.effective_user_id, is_correct, quality)
+    _maybe_send_achievement_email(u, newly_earned)
     session["quiz_feedback"] = {"is_correct": is_correct, "correct_answer": correct_answer}
     return redirect(url_for("app.quiz"))
+
+
+def _maybe_send_achievement_email(u, newly_earned: dict | None) -> None:
+    try:
+        prefs = get_user_prefs(u.effective_user_id)
+        if not prefs.get("email_enabled", True):
+            return
+        to_email = get_user_email(u.effective_user_id)
+        if not to_email:
+            return
+        earned_codes = set((newly_earned or {}).get("user", []) + (newly_earned or {}).get("subject", []))
+        if not earned_codes:
+            return
+        catalog = {a["code"]: a for a in ACHIEVEMENTS}
+        payload = [catalog[c] for c in earned_codes if c in catalog]
+        if not payload:
+            return
+        send_achievement_email(to_email=to_email, username=u.real_username, achievements=payload)
+    except Exception:
+        return
 
 
 @bp.get("/progress")
@@ -529,6 +557,38 @@ def cards_delete():
         admin_log(u.real_user_id, u.effective_user_id, f"Deleted card {card_id}")
     flash("Card deleted." if ok else "Could not delete card.", "success" if ok else "danger")
     return redirect(url_for("app.progress"))
+
+
+@bp.get("/preferences")
+@login_required
+def preferences():
+    u = get_session_user()
+    assert u is not None
+    csrf = ensure_csrf_token()
+    prefs = get_user_prefs(u.effective_user_id)
+    email = get_user_email(u.effective_user_id) or ""
+    return render_template("app/preferences.html", csrf_token=csrf, user=u, prefs=prefs, email=email)
+
+
+@bp.post("/preferences")
+@login_required
+def preferences_post():
+    validate_csrf()
+    u = get_session_user()
+    assert u is not None
+    email_enabled = bool(request.form.get("email_enabled"))
+    weekly_email_enabled = bool(request.form.get("weekly_email_enabled"))
+    weekly_day = int(request.form.get("weekly_email_day") or 1)
+    weekly_hour = int(request.form.get("weekly_email_hour") or 9)
+    update_user_prefs(
+        user_id=u.effective_user_id,
+        email_enabled=email_enabled,
+        weekly_email_enabled=weekly_email_enabled,
+        weekly_email_day=weekly_day,
+        weekly_email_hour=weekly_hour,
+    )
+    flash("Preferences saved.", "success")
+    return redirect(url_for("app.preferences"))
 
 
 @bp.get("/companion")

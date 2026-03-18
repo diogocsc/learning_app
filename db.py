@@ -1,5 +1,6 @@
 # db.py
 import os
+import re
 import sqlite3
 from typing import List, Optional, Tuple, Dict
 from pathlib import Path
@@ -36,10 +37,17 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
+            email TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         """
     )
+
+    # Backfill schema if DB existed before adding `email`
+    cursor.execute("PRAGMA table_info(users)")
+    cols = {r[1] for r in cursor.fetchall()}
+    if "email" not in cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN email TEXT;")
 
     # Ensure default admin user exists
     cursor.execute("SELECT id FROM users WHERE username = 'admin'")
@@ -139,13 +147,101 @@ def init_db():
         """
     )
 
+    # ---------- Gamification ----------
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_stats (
+            user_id INTEGER PRIMARY KEY,
+            xp INTEGER NOT NULL DEFAULT 0,
+            level INTEGER NOT NULL DEFAULT 1,
+            current_streak INTEGER NOT NULL DEFAULT 0,
+            best_streak INTEGER NOT NULL DEFAULT 0,
+            last_streak_date TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS subject_stats (
+            user_id INTEGER NOT NULL,
+            subject_id INTEGER NOT NULL,
+            xp INTEGER NOT NULL DEFAULT 0,
+            level INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (user_id, subject_id),
+            FOREIGN KEY(user_id) REFERENCES users(id),
+            FOREIGN KEY(subject_id) REFERENCES subjects(id)
+        );
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS daily_progress (
+            user_id INTEGER NOT NULL,
+            day TEXT NOT NULL, -- YYYY-MM-DD
+            attempts INTEGER NOT NULL DEFAULT 0,
+            correct INTEGER NOT NULL DEFAULT 0,
+            xp INTEGER NOT NULL DEFAULT 0,
+            streak_counted INTEGER NOT NULL DEFAULT 0, -- 0/1
+            PRIMARY KEY (user_id, day),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        """
+    )
+
+    # Achievements (badges)
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_achievements (
+            user_id INTEGER NOT NULL,
+            code TEXT NOT NULL,
+            earned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, code),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS subject_achievements (
+            user_id INTEGER NOT NULL,
+            subject_id INTEGER NOT NULL,
+            code TEXT NOT NULL,
+            earned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, subject_id, code),
+            FOREIGN KEY(user_id) REFERENCES users(id),
+            FOREIGN KEY(subject_id) REFERENCES subjects(id)
+        );
+        """
+    )
+
+    # Notification preferences (per user)
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_prefs (
+            user_id INTEGER PRIMARY KEY,
+            email_enabled INTEGER NOT NULL DEFAULT 1,
+            weekly_email_enabled INTEGER NOT NULL DEFAULT 1,
+            weekly_email_day INTEGER NOT NULL DEFAULT 1, -- 0=Mon ... 6=Sun
+            weekly_email_hour INTEGER NOT NULL DEFAULT 9, -- 0-23
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        """
+    )
+
     conn.commit()
     conn.close()
 
 
 # ---------- User management ----------
 
-def create_user(username: str, password_hash: str) -> bool:
+def create_user(username: str, password_hash: str, email: Optional[str] = None) -> bool:
     """
     Create a new user. Returns True on success, False if username already exists.
     """
@@ -154,10 +250,10 @@ def create_user(username: str, password_hash: str) -> bool:
     try:
         cursor.execute(
             """
-            INSERT INTO users (username, password_hash)
-            VALUES (?, ?)
+            INSERT INTO users (username, password_hash, email)
+            VALUES (?, ?, ?)
             """,
-            (username, password_hash),
+            (username, password_hash, email),
         )
         conn.commit()
         return True
@@ -183,6 +279,81 @@ def get_user_by_username(username: str) -> Optional[Tuple[int, str, str]]:
     if row:
         return row[0], row[1], row[2]
     return None
+
+
+def get_user_email(user_id: int) -> Optional[str]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT email, username FROM users WHERE id = ?", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    email, username = row
+    if isinstance(email, str) and email.strip():
+        return email.strip()
+    if isinstance(username, str) and re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", username.strip()):
+        return username.strip()
+    return None
+
+
+def get_user_prefs(user_id: int) -> Dict:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO user_prefs (user_id) VALUES (?)", (user_id,))
+    cur.execute(
+        """
+        SELECT email_enabled, weekly_email_enabled, weekly_email_day, weekly_email_hour
+        FROM user_prefs
+        WHERE user_id = ?
+        """,
+        (user_id,),
+    )
+    row = cur.fetchone()
+    conn.commit()
+    conn.close()
+    email_enabled, weekly_enabled, weekly_day, weekly_hour = row if row else (1, 1, 1, 9)
+    return {
+        "email_enabled": bool(int(email_enabled)),
+        "weekly_email_enabled": bool(int(weekly_enabled)),
+        "weekly_email_day": int(weekly_day),
+        "weekly_email_hour": int(weekly_hour),
+    }
+
+
+def update_user_prefs(
+    *,
+    user_id: int,
+    email_enabled: bool,
+    weekly_email_enabled: bool,
+    weekly_email_day: int,
+    weekly_email_hour: int,
+) -> None:
+    weekly_email_day = max(0, min(int(weekly_email_day), 6))
+    weekly_email_hour = max(0, min(int(weekly_email_hour), 23))
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO user_prefs (user_id) VALUES (?)", (user_id,))
+    cur.execute(
+        """
+        UPDATE user_prefs
+        SET email_enabled = ?,
+            weekly_email_enabled = ?,
+            weekly_email_day = ?,
+            weekly_email_hour = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = ?
+        """,
+        (
+            1 if email_enabled else 0,
+            1 if weekly_email_enabled else 0,
+            weekly_email_day,
+            weekly_email_hour,
+            user_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
 
 
 def get_all_users() -> List[Tuple[int, str]]:
@@ -331,7 +502,232 @@ def get_admin_logs(limit: int = 200) -> List[Dict]:
 
 # ---------- SRS & card operations ----------
 
-def record_attempt(card_id: int, subject_id: int, user_id: int, is_correct: bool, quality: int):
+def _level_from_xp(xp: int) -> int:
+    """
+    Smooth leveling curve: level ~ sqrt(xp / 120) + 1
+    - 0xp -> lvl 1
+    - ~480xp -> lvl 3
+    - ~1080xp -> lvl 4
+    """
+    if xp <= 0:
+        return 1
+    # avoid importing math for tiny function
+    x = xp / 120.0
+    # integer sqrt approximation via **0.5 is fine here
+    lvl = int(x ** 0.5) + 1
+    return max(1, lvl)
+
+
+def _ensure_user_stats(cursor: sqlite3.Cursor, user_id: int) -> None:
+    cursor.execute("INSERT OR IGNORE INTO user_stats (user_id) VALUES (?)", (user_id,))
+
+
+def _ensure_subject_stats(cursor: sqlite3.Cursor, user_id: int, subject_id: int) -> None:
+    cursor.execute(
+        "INSERT OR IGNORE INTO subject_stats (user_id, subject_id) VALUES (?, ?)",
+        (user_id, subject_id),
+    )
+
+
+def _award_xp_and_update_streak(
+    *,
+    conn: sqlite3.Connection,
+    user_id: int,
+    subject_id: int,
+    is_correct: bool,
+    quality: int,
+    goal_attempts: int = 10,
+) -> None:
+    """
+    Award XP for an attempt and manage streaks.
+    Rewards both consistency (hitting daily goal) and accuracy/quality.
+    """
+    cursor = conn.cursor()
+    today = date.today().isoformat()
+
+    # XP rule
+    base_xp = 5
+    quality_bonus = max(0, min(int(quality), 5))  # 0..5
+    correct_bonus = 5 if is_correct else 0
+    xp_gain = base_xp + quality_bonus + correct_bonus
+
+    _ensure_user_stats(cursor, user_id)
+    _ensure_subject_stats(cursor, user_id, subject_id)
+
+    cursor.execute(
+        """
+        INSERT INTO daily_progress (user_id, day, attempts, correct, xp, streak_counted)
+        VALUES (?, ?, 0, 0, 0, 0)
+        ON CONFLICT(user_id, day) DO NOTHING
+        """,
+        (user_id, today),
+    )
+    cursor.execute(
+        """
+        UPDATE daily_progress
+        SET attempts = attempts + 1,
+            correct = correct + ?,
+            xp = xp + ?
+        WHERE user_id = ? AND day = ?
+        """,
+        (1 if is_correct else 0, xp_gain, user_id, today),
+    )
+
+    # Update global XP + level
+    cursor.execute("SELECT xp FROM user_stats WHERE user_id = ?", (user_id,))
+    user_xp = int(cursor.fetchone()[0] or 0) + xp_gain
+    cursor.execute("UPDATE user_stats SET xp = ?, level = ? WHERE user_id = ?", (user_xp, _level_from_xp(user_xp), user_id))
+
+    # Update per-subject XP + level
+    cursor.execute("SELECT xp FROM subject_stats WHERE user_id = ? AND subject_id = ?", (user_id, subject_id))
+    subj_xp = int(cursor.fetchone()[0] or 0) + xp_gain
+    cursor.execute(
+        "UPDATE subject_stats SET xp = ?, level = ? WHERE user_id = ? AND subject_id = ?",
+        (subj_xp, _level_from_xp(subj_xp), user_id, subject_id),
+    )
+
+    # Streak: only increments when daily attempts reaches the goal and hasn't been counted
+    cursor.execute(
+        "SELECT attempts, streak_counted FROM daily_progress WHERE user_id = ? AND day = ?",
+        (user_id, today),
+    )
+    attempts_today, streak_counted = cursor.fetchone()
+    attempts_today = int(attempts_today or 0)
+    streak_counted = int(streak_counted or 0)
+
+    if attempts_today >= goal_attempts and streak_counted == 0:
+        # Determine whether streak continues
+        cursor.execute("SELECT current_streak, best_streak, last_streak_date FROM user_stats WHERE user_id = ?", (user_id,))
+        current_streak, best_streak, last_streak_date = cursor.fetchone()
+        current_streak = int(current_streak or 0)
+        best_streak = int(best_streak or 0)
+
+        yesterday = (date.today() - timedelta(days=1)).isoformat()
+        if last_streak_date == yesterday:
+            current_streak += 1
+        elif last_streak_date == today:
+            # already counted today (shouldn't happen because streak_counted=0),
+            # but keep safe
+            current_streak = max(current_streak, 1)
+        else:
+            current_streak = 1
+
+        best_streak = max(best_streak, current_streak)
+
+        cursor.execute(
+            "UPDATE user_stats SET current_streak=?, best_streak=?, last_streak_date=? WHERE user_id=?",
+            (current_streak, best_streak, today, user_id),
+        )
+        cursor.execute(
+            "UPDATE daily_progress SET streak_counted = 1 WHERE user_id = ? AND day = ?",
+            (user_id, today),
+        )
+
+
+# ---------- Achievements & mastery ----------
+
+_ACH_USER_FIRST_10 = "first_10_attempts"
+_ACH_USER_STREAK_3 = "streak_3"
+_ACH_USER_STREAK_7 = "streak_7"
+_ACH_USER_STREAK_30 = "streak_30"
+_ACH_USER_DAY_90_ACC = "day_accuracy_90_20"
+
+_ACH_SUBJ_FIRST_50_XP = "subject_50_xp"
+_ACH_SUBJ_MASTERY_60 = "subject_mastery_60"
+_ACH_SUBJ_MASTERY_85 = "subject_mastery_85"
+
+
+def _get_subject_mastery(cur: sqlite3.Cursor, user_id: int, subject_id: int) -> Dict[str, int]:
+    """
+    Mastery proxy based on SRS repetitions:
+    - mastered if repetitions >= 2
+    """
+    cur.execute(
+        """
+        SELECT COUNT(*),
+               SUM(CASE WHEN c.repetitions >= 2 THEN 1 ELSE 0 END)
+        FROM cards c
+        JOIN subjects s ON c.subject_id = s.id
+        WHERE c.subject_id = ? AND s.user_id = ?
+        """,
+        (subject_id, user_id),
+    )
+    total, mastered = cur.fetchone()
+    total = int(total or 0)
+    mastered = int(mastered or 0)
+    pct = int(round((mastered / total) * 100)) if total else 0
+    return {"total": total, "mastered": mastered, "pct": pct}
+
+
+def _award_achievements(conn: sqlite3.Connection, user_id: int, subject_id: int) -> Dict[str, List[str]]:
+    """
+    Award new achievements and return dict of newly earned codes:
+    { "user": [...], "subject": [...] }
+    """
+    cur = conn.cursor()
+    today = date.today().isoformat()
+    new_user: List[str] = []
+    new_subject: List[str] = []
+
+    # Total attempts (user)
+    cur.execute("SELECT COUNT(*) FROM card_attempts WHERE user_id = ?", (user_id,))
+    total_attempts = int(cur.fetchone()[0] or 0)
+    if total_attempts >= 10:
+        cur.execute("INSERT OR IGNORE INTO user_achievements (user_id, code) VALUES (?, ?)", (user_id, _ACH_USER_FIRST_10))
+        if cur.rowcount:
+            new_user.append(_ACH_USER_FIRST_10)
+
+    # Streak-based
+    cur.execute("SELECT current_streak FROM user_stats WHERE user_id = ?", (user_id,))
+    streak = int((cur.fetchone() or [0])[0] or 0)
+    for threshold, code in [(3, _ACH_USER_STREAK_3), (7, _ACH_USER_STREAK_7), (30, _ACH_USER_STREAK_30)]:
+        if streak >= threshold:
+            cur.execute("INSERT OR IGNORE INTO user_achievements (user_id, code) VALUES (?, ?)", (user_id, code))
+            if cur.rowcount:
+                new_user.append(code)
+
+    # High-accuracy day: >=20 attempts today and >=90% correct
+    cur.execute("SELECT attempts, correct FROM daily_progress WHERE user_id = ? AND day = ?", (user_id, today))
+    row = cur.fetchone()
+    if row:
+        attempts_today, correct_today = int(row[0] or 0), int(row[1] or 0)
+        if attempts_today >= 20 and attempts_today > 0 and (correct_today / attempts_today) >= 0.90:
+            cur.execute("INSERT OR IGNORE INTO user_achievements (user_id, code) VALUES (?, ?)", (user_id, _ACH_USER_DAY_90_ACC))
+            if cur.rowcount:
+                new_user.append(_ACH_USER_DAY_90_ACC)
+
+    # Subject XP thresholds
+    _ensure_subject_stats(cur, user_id, subject_id)
+    cur.execute("SELECT xp FROM subject_stats WHERE user_id = ? AND subject_id = ?", (user_id, subject_id))
+    subj_xp = int(cur.fetchone()[0] or 0)
+    if subj_xp >= 50:
+        cur.execute(
+            "INSERT OR IGNORE INTO subject_achievements (user_id, subject_id, code) VALUES (?, ?, ?)",
+            (user_id, subject_id, _ACH_SUBJ_FIRST_50_XP),
+        )
+        if cur.rowcount:
+            new_subject.append(_ACH_SUBJ_FIRST_50_XP)
+
+    mastery = _get_subject_mastery(cur, user_id, subject_id)
+    if mastery["pct"] >= 60:
+        cur.execute(
+            "INSERT OR IGNORE INTO subject_achievements (user_id, subject_id, code) VALUES (?, ?, ?)",
+            (user_id, subject_id, _ACH_SUBJ_MASTERY_60),
+        )
+        if cur.rowcount:
+            new_subject.append(_ACH_SUBJ_MASTERY_60)
+    if mastery["pct"] >= 85:
+        cur.execute(
+            "INSERT OR IGNORE INTO subject_achievements (user_id, subject_id, code) VALUES (?, ?, ?)",
+            (user_id, subject_id, _ACH_SUBJ_MASTERY_85),
+        )
+        if cur.rowcount:
+            new_subject.append(_ACH_SUBJ_MASTERY_85)
+
+    return {"user": new_user, "subject": new_subject}
+
+
+def record_attempt(card_id: int, subject_id: int, user_id: int, is_correct: bool, quality: int) -> Dict[str, List[str]]:
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -341,8 +737,95 @@ def record_attempt(card_id: int, subject_id: int, user_id: int, is_correct: bool
         """,
         (card_id, subject_id, user_id, 1 if is_correct else 0, quality),
     )
+    _award_xp_and_update_streak(
+        conn=conn,
+        user_id=user_id,
+        subject_id=subject_id,
+        is_correct=is_correct,
+        quality=quality,
+        goal_attempts=10,
+    )
+    newly_earned = _award_achievements(conn, user_id, subject_id)
     conn.commit()
     conn.close()
+    return newly_earned
+
+
+def get_gamification_summary(user_id: int, subject_id: Optional[int] = None) -> Dict:
+    """
+    Returns gamification snapshot for header/UI.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    today = date.today().isoformat()
+
+    cur.execute("INSERT OR IGNORE INTO user_stats (user_id) VALUES (?)", (user_id,))
+    cur.execute("SELECT xp, level, current_streak, best_streak, last_streak_date FROM user_stats WHERE user_id = ?", (user_id,))
+    xp, level, current_streak, best_streak, last_streak_date = cur.fetchone()
+
+    cur.execute(
+        """
+        SELECT attempts, correct, xp, streak_counted
+        FROM daily_progress
+        WHERE user_id = ? AND day = ?
+        """,
+        (user_id, today),
+    )
+    row = cur.fetchone()
+    if row:
+        attempts_today, correct_today, xp_today, streak_counted = row
+    else:
+        attempts_today, correct_today, xp_today, streak_counted = (0, 0, 0, 0)
+
+    out: Dict = {
+        "goal_attempts": 10,
+        "attempts_today": int(attempts_today or 0),
+        "correct_today": int(correct_today or 0),
+        "xp_today": int(xp_today or 0),
+        "xp": int(xp or 0),
+        "level": int(level or 1),
+        "streak": int(current_streak or 0),
+        "best_streak": int(best_streak or 0),
+        "last_streak_date": last_streak_date,
+        "streak_done_today": bool(streak_counted),
+    }
+
+    if subject_id is not None:
+        cur.execute(
+            "INSERT OR IGNORE INTO subject_stats (user_id, subject_id) VALUES (?, ?)",
+            (user_id, subject_id),
+        )
+        cur.execute("SELECT xp, level FROM subject_stats WHERE user_id = ? AND subject_id = ?", (user_id, subject_id))
+        sxp, slevel = cur.fetchone()
+        mastery = _get_subject_mastery(cur, user_id, subject_id)
+        out["subject"] = {
+            "subject_id": subject_id,
+            "xp": int(sxp or 0),
+            "level": int(slevel or 1),
+            "mastery_pct": mastery["pct"],
+            "mastered_cards": mastery["mastered"],
+            "total_cards": mastery["total"],
+        }
+
+    conn.commit()
+    conn.close()
+    return out
+
+
+def get_earned_achievements(user_id: int, subject_id: Optional[int] = None) -> Dict[str, List[str]]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT code FROM user_achievements WHERE user_id = ? ORDER BY earned_at", (user_id,))
+    user_codes = [r[0] for r in cur.fetchall()]
+    subj_codes: List[str] = []
+    if subject_id is not None:
+        cur.execute(
+            "SELECT code FROM subject_achievements WHERE user_id = ? AND subject_id = ? ORDER BY earned_at",
+            (user_id, subject_id),
+        )
+        subj_codes = [r[0] for r in cur.fetchall()]
+    conn.close()
+    return {"user": user_codes, "subject": subj_codes}
 
 
 def update_card_schedule(card_id: int, quality: int):

@@ -13,7 +13,16 @@
         <a class="navbar-brand fw-semibold" href="{{ url_for('app.index') }}">AI Learning Assistant</a>
         <div class="ms-auto d-flex gap-2 align-items-center">
           {% if user %}
+            {% if game %}
+              <span class="badge text-bg-light font-mono">
+                L{{ game.level }} · {{ game.xp }} XP
+              </span>
+              <span class="badge text-bg-light font-mono">
+                🔥 {{ game.streak }}{% if game.streak == 1 %} day{% else %} days{% endif %}
+              </span>
+            {% endif %}
             <span class="text-muted small font-mono">Signed in as <strong>{{ user.real_username }}</strong>{% if user.is_impersonating %} (impersonating <strong>#{{ user.effective_user_id }}</strong>){% endif %}</span>
+            <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('app.preferences') }}">Preferences</a>
             {% if user.is_admin %}
               <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('admin.users') }}">Admin</a>
             {% endif %}

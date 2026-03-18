@@ -3,9 +3,12 @@ from __future__ import annotations
 import os
 from datetime import timedelta
 
-from flask import Flask, render_template
+from flask import Flask, render_template, session
 
-from db import init_db
+from db import init_db, get_earned_achievements
+from webapp.services.session import get_session_user
+from db import get_gamification_summary
+from webapp.services.achievements_catalog import ACHIEVEMENTS
 from .routes.auth import bp as auth_bp
 from .routes.app import bp as app_bp
 from .routes.admin import bp as admin_bp
@@ -28,6 +31,22 @@ def create_app() -> Flask:
     app.register_blueprint(auth_bp)
     app.register_blueprint(app_bp)
     app.register_blueprint(admin_bp)
+
+    @app.context_processor
+    def inject_gamification():
+        u = get_session_user()
+        if u is None:
+            return {}
+        subject_id = session.get("current_subject_id")
+        try:
+            subject_id_int = int(subject_id) if subject_id else None
+        except (TypeError, ValueError):
+            subject_id_int = None
+        return {
+            "game": get_gamification_summary(u.effective_user_id, subject_id_int),
+            "achievements_catalog": ACHIEVEMENTS,
+            "earned": get_earned_achievements(u.effective_user_id, subject_id_int),
+        }
 
     @app.errorhandler(413)
     def request_entity_too_large(_e):

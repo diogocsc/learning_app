@@ -1,0 +1,90 @@
+{% extends "layout.html" %}
+{% block content %}
+  <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
+    <div>
+      <h1 class="h4 mb-1">{{ track.title }}</h1>
+      <div class="text-muted small">Subject: {{ track.subject_name }}</div>
+      <div class="text-muted small">Lesson {{ track.unlocked_lesson_index + 1 }} / {{ track.num_lessons }}</div>
+    </div>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary" href="{{ url_for('app.tracks') }}">Back to tracks</a>
+      <form method="post" action="{{ url_for('app.tracks_delete', track_id=track.id) }}" class="m-0">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn btn-outline-danger" type="submit" onclick="return confirm('Delete this track and all its lessons/exercises?')">
+          Delete track
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <div class="row g-3">
+    <div class="col-lg-5">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h2 class="h6 mb-3">Lessons</h2>
+          <div class="vstack gap-2">
+            {% for l in lessons %}
+              <div class="border rounded p-3 {% if l.is_unlocked %}bg-white{% else %}bg-light{% endif %}">
+                <div class="d-flex justify-content-between align-items-start gap-2">
+                  <div>
+                    <div class="fw-semibold">Lesson {{ l.lesson_index + 1 }}: {{ l.title }}</div>
+                    {% if l.brief %}
+                      <div class="text-muted small mt-1" style="white-space: pre-wrap;">{{ l.brief }}</div>
+                    {% endif %}
+                  </div>
+                  <div>
+                    {% if l.is_unlocked %}
+                      <span class="badge text-bg-light font-mono">unlocked</span>
+                    {% else %}
+                      <span class="badge text-bg-secondary font-mono">locked</span>
+                    {% endif %}
+                  </div>
+                </div>
+
+                {% if l.is_unlocked %}
+                  <div class="d-flex gap-2 mt-3">
+                    <a class="btn btn-sm btn-primary" href="{{ url_for('app.track_lesson_bite', track_id=track.id, lesson_id=l.id) }}">Read bite</a>
+                  </div>
+                {% endif %}
+              </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-7">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h2 class="h6 mb-3">Current guidance</h2>
+          <div class="text-muted small">
+            Start the first unlocked lesson, answer the exercises, and your progress will unlock the next lesson when enough cards are mastered.
+          </div>
+          <div class="mt-3">
+            {% if first_unlocked_lesson_id %}
+              <a class="btn btn-outline-secondary" href="{{ url_for('app.track_lesson_bite', track_id=track.id, lesson_id=first_unlocked_lesson_id) }}">Read first bite</a>
+            {% else %}
+              <div class="text-muted small">No unlocked lessons yet.</div>
+            {% endif %}
+          </div>
+          {% if user.is_admin and not track.open_all %}
+            <div class="alert alert-warning mt-3">
+              Admin control: open all lessons for this track.
+              <form method="post" action="{{ url_for('admin.tracks_open_all', track_id=track.id) }}" class="m-0 mt-2">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button class="btn btn-sm btn-outline-warning w-100" type="submit" onclick="return confirm('Open all lessons for this track?')">
+                  Open all lessons
+                </button>
+              </form>
+            </div>
+          {% elif user.is_admin and track.open_all %}
+            <div class="alert alert-success mt-3">
+              Admin control: all lessons are already unlocked for this track.
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+

@@ -1,0 +1,52 @@
+{% extends "layout.html" %}
+{% block content %}
+  <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
+    <div>
+      <h1 class="h4 mb-1">Tracks</h1>
+      <div class="text-muted small">Learning paths with gated lessons and exercises.</div>
+    </div>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary" href="{{ url_for('app.dashboard') }}">Back to subject</a>
+    </div>
+  </div>
+
+  {% if not tracks %}
+    <div class="alert alert-warning">No tracks yet.</div>
+  {% else %}
+    <div class="row g-3">
+      {% for t in tracks %}
+        <div class="col-lg-6">
+          <div class="card shadow-sm h-100">
+            <div class="card-body">
+              <div class="d-flex justify-content-between align-items-start gap-2">
+                <div>
+                  <div class="fw-semibold">{{ t.title }}</div>
+                  <div class="text-muted small mt-1">{{ t.subject_name }}</div>
+                </div>
+                <span class="badge text-bg-light font-mono">
+                  Lesson {{ t.unlocked_lesson_index + 1 }} / {{ t.num_lessons }}
+                </span>
+              </div>
+
+              <div class="progress mt-3">
+                {% set pct = (100 * (t.unlocked_lesson_index + 1) / t.num_lessons) %}
+                <div class="progress-bar" style="width: {{ pct }}%"></div>
+              </div>
+
+              <div class="d-flex gap-2 mt-3">
+                <a class="btn btn-primary" href="{{ url_for('app.track_view', track_id=t.id) }}">Open</a>
+                <form method="post" action="{{ url_for('app.tracks_delete', track_id=t.id) }}" class="m-0">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button class="btn btn-outline-danger" type="submit" onclick="return confirm('Delete this track and all its lessons/exercises?')">
+                    Delete
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endblock %}
+

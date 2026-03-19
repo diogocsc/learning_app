@@ -22,8 +22,6 @@
       <form method="post" action="{{ url_for('app.quiz_check') }}">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <input type="hidden" name="card_id" value="{{ card.id }}">
-        <input type="hidden" name="correct_answer" value="{{ card.answer }}">
-        <input type="hidden" name="card_type" value="{{ card.card_type }}">
 
         {% if card.card_type == "multiple_choice" and card.options %}
           <div class="vstack gap-2 mb-3">
@@ -35,10 +33,17 @@
             {% endfor %}
           </div>
         {% else %}
-          <div class="mb-3">
-            <label class="form-label">Your answer</label>
-            <input class="form-control" name="user_answer" value="{{ prev_answer }}" required>
-          </div>
+          {% if card.card_type in ["free_response", "step_by_step", "coding_task"] %}
+            <div class="mb-3">
+              <label class="form-label">Your answer</label>
+              <textarea class="form-control" name="user_answer" rows="8" required>{{ prev_answer }}</textarea>
+            </div>
+          {% else %}
+            <div class="mb-3">
+              <label class="form-label">Your answer</label>
+              <input class="form-control" name="user_answer" value="{{ prev_answer }}" required>
+            </div>
+          {% endif %}
         {% endif %}
 
         <button class="btn btn-primary" type="submit">Check answer</button>
@@ -51,8 +56,14 @@
           {% else %}
             <div class="alert alert-danger">Incorrect.</div>
           {% endif %}
-          <div class="small text-muted">Correct answer:</div>
-          <div class="fw-semibold">{{ feedback.correct_answer }}</div>
+          {% if feedback.correct_answer %}
+            <div class="small text-muted mt-2">Correct answer:</div>
+            <div class="fw-semibold">{{ feedback.correct_answer }}</div>
+          {% endif %}
+          {% if feedback.feedback_text %}
+            <div class="small text-muted mt-2">LLM feedback:</div>
+            <div style="white-space: pre-wrap;">{{ feedback.feedback_text }}</div>
+          {% endif %}
         </div>
       {% endif %}
 

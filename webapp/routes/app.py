@@ -26,6 +26,14 @@ from db import (
     get_user_email,
     get_user_prefs,
     update_user_prefs,
+    maybe_unlock_next_lesson,
+    get_card_track_lesson,
+    get_tracks,
+    get_track,
+    get_lessons,
+    get_track_generation_defaults,
+    count_user_tracks,
+    delete_track_for_user,
 )
 from webapp.services.csrf import ensure_csrf_token, validate_csrf
 from webapp.services.session import login_required, get_session_user
@@ -36,6 +44,8 @@ from webapp.services.markdown_render import render_markdown_safe
 from webapp.services.subjects import delete_subject_for_user
 from webapp.services.emailer import send_achievement_email
 from webapp.services.achievements_catalog import ACHIEVEMENTS
+from webapp.services.exercise_grader import grade_exercise_answer
+from webapp.services.track_generation import generate_track_from_subject_pdfs
 
 bp = Blueprint("app", __name__)
 
@@ -43,6 +53,11 @@ bp = Blueprint("app", __name__)
 def _active_subject_id() -> int | None:
     sid = session.get("current_subject_id")
     return int(sid) if sid else None
+
+
+def _active_lesson_id() -> int | None:
+    lid = session.get("active_lesson_id")
+    return int(lid) if lid else None
 
 
 def _companion_messages() -> list[dict]:
@@ -74,7 +89,7 @@ def dashboard():
     subjects = get_subjects(u.effective_user_id)
     subject_id = _active_subject_id()
     files = get_uploaded_files(u.effective_user_id, subject_id) if subject_id else []
-    due_cards = get_due_cards(subject_id, limit=200) if subject_id else []
+    due_cards = get_due_cards(subject_id, limit=200, user_id=u.effective_user_id) if subject_id else []
     due_cards = [c for c in due_cards if c.card_type != "multiple_choice"]
     return render_template(
         "app/workspace.html",
@@ -87,12 +102,176 @@ def dashboard():
     )
 
 
+@bp.get("/tracks")
+@login_required
+def tracks():
+    u = get_session_user()
+    assert u is not None
+    csrf = ensure_csrf_token()
+    user_tracks = get_tracks(u.effective_user_id)
+    return render_template("app/tracks.html", csrf_token=csrf, user=u, tracks=user_tracks)
+
+
+@bp.post("/tracks/<int:track_id>/delete")
+@login_required
+def tracks_delete(track_id: int):
+    validate_csrf()
+    u = get_session_user()
+    assert u is not None
+
+    ok = delete_track_for_user(user_id=u.effective_user_id, track_id=track_id)
+    if ok:
+        # Clear gating state if user was viewing a lesson from this track.
+        try:
+            active_lesson_id = session.get("active_lesson_id")
+            if active_lesson_id:
+                # If active lesson belongs to deleted track, clear it.
+                conn = get_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM lessons l
+                    WHERE l.id = ?
+                      AND l.track_id = ?
+                    """,
+                    (int(active_lesson_id), track_id),
+                )
+                allowed = cur.fetchone()
+                conn.close()
+                if allowed:
+                    session.pop("active_lesson_id", None)
+                    session.pop("srs_index", None)
+                    session.pop("quiz_index", None)
+        except Exception:
+            pass
+
+        flash("Track deleted.", "success")
+    else:
+        flash("Track not found or you do not have permission to delete it.", "danger")
+    return redirect(url_for("app.tracks"))
+
+
+@bp.get("/tracks/<int:track_id>")
+@login_required
+def track_view(track_id: int):
+    u = get_session_user()
+    assert u is not None
+    csrf = ensure_csrf_token()
+    t = get_track(u.effective_user_id, track_id)
+    if not t:
+        flash("Track not found.", "danger")
+        return redirect(url_for("app.tracks"))
+    lessons = get_lessons(u.effective_user_id, track_id)
+    first_unlocked = next((l for l in lessons if l.get("is_unlocked")), None)
+    first_unlocked_lesson_id = int(first_unlocked["id"]) if first_unlocked else None
+    return render_template(
+        "app/track_view.html",
+        csrf_token=csrf,
+        user=u,
+        track=t,
+        lessons=lessons,
+        first_unlocked_lesson_id=first_unlocked_lesson_id,
+    )
+
+
+@bp.post("/tracks/<int:track_id>/lesson/<int:lesson_id>/study")
+@login_required
+def track_lesson_study(track_id: int, lesson_id: int):
+    validate_csrf()
+    u = get_session_user()
+    assert u is not None
+    return redirect(url_for("app.track_lesson_bite", track_id=track_id, lesson_id=lesson_id))
+
+
+@bp.post("/tracks/<int:track_id>/lesson/<int:lesson_id>/quiz")
+@login_required
+def track_lesson_quiz(track_id: int, lesson_id: int):
+    validate_csrf()
+    u = get_session_user()
+    assert u is not None
+    return redirect(url_for("app.track_lesson_bite", track_id=track_id, lesson_id=lesson_id))
+
+
+@bp.get("/tracks/<int:track_id>/lesson/<int:lesson_id>/bite")
+@login_required
+def track_lesson_bite(track_id: int, lesson_id: int):
+    u = get_session_user()
+    assert u is not None
+    csrf = ensure_csrf_token()
+
+    t = get_track(u.effective_user_id, track_id)
+    if not t:
+        flash("Track not found.", "danger")
+        return redirect(url_for("app.tracks"))
+
+    lessons = get_lessons(u.effective_user_id, track_id)
+    lesson = next((l for l in lessons if int(l["id"]) == lesson_id), None)
+    if not lesson or not lesson.get("is_unlocked"):
+        flash("Lesson is locked.", "danger")
+        return redirect(url_for("app.track_view", track_id=track_id))
+
+    bite_md = lesson.get("bite_markdown") or lesson.get("brief") or ""
+    bite_html = render_markdown_safe(bite_md)
+    lesson_ctx = {**lesson, "bite_html": bite_html}
+    return render_template("app/lesson_bite.html", csrf_token=csrf, user=u, track=t, lesson=lesson_ctx)
+
+
+@bp.post("/tracks/<int:track_id>/lesson/<int:lesson_id>/start-study")
+@login_required
+def track_lesson_start_study(track_id: int, lesson_id: int):
+    validate_csrf()
+    u = get_session_user()
+    assert u is not None
+
+    t = get_track(u.effective_user_id, track_id)
+    if not t:
+        return redirect(url_for("app.tracks"))
+
+    lessons = get_lessons(u.effective_user_id, track_id)
+    lesson = next((l for l in lessons if int(l["id"]) == lesson_id), None)
+    if not lesson or not lesson.get("is_unlocked"):
+        flash("Lesson is locked.", "danger")
+        return redirect(url_for("app.track_view", track_id=track_id))
+
+    session["current_subject_id"] = int(t["subject_id"])
+    session["active_lesson_id"] = int(lesson_id)
+    session["srs_index"] = 0
+    session["show_answer"] = False
+    return redirect(url_for("app.study"))
+
+
+@bp.post("/tracks/<int:track_id>/lesson/<int:lesson_id>/start-quiz")
+@login_required
+def track_lesson_start_quiz(track_id: int, lesson_id: int):
+    validate_csrf()
+    u = get_session_user()
+    assert u is not None
+
+    t = get_track(u.effective_user_id, track_id)
+    if not t:
+        return redirect(url_for("app.tracks"))
+
+    lessons = get_lessons(u.effective_user_id, track_id)
+    lesson = next((l for l in lessons if int(l["id"]) == lesson_id), None)
+    if not lesson or not lesson.get("is_unlocked"):
+        flash("Lesson is locked.", "danger")
+        return redirect(url_for("app.track_view", track_id=track_id))
+
+    session["current_subject_id"] = int(t["subject_id"])
+    session["active_lesson_id"] = int(lesson_id)
+    session["quiz_index"] = 0
+    session.pop("quiz_feedback", None)
+    return redirect(url_for("app.quiz"))
+
+
 @bp.post("/subjects/select")
 @login_required
 def subjects_select():
     validate_csrf()
     sid = request.form.get("subject_id")
     session["current_subject_id"] = int(sid) if sid else None
+    session.pop("active_lesson_id", None)
     return redirect(url_for("app.dashboard"))
 
 
@@ -111,6 +290,7 @@ def subjects_create():
         admin_log(u.real_user_id, u.effective_user_id, f"Created subject '{name}'")
     # select it
     session["current_subject_id"] = get_subject_id(name, u.effective_user_id)
+    session.pop("active_lesson_id", None)
     flash(f"Subject '{name}' created.", "success")
     return redirect(url_for("app.dashboard"))
 
@@ -133,6 +313,7 @@ def subjects_delete():
     # Clear active subject if it was deleted
     if _active_subject_id() == subject_id:
         session["current_subject_id"] = None
+        session.pop("active_lesson_id", None)
 
     if u.is_impersonating:
         admin_log(u.real_user_id, u.effective_user_id, f"Deleted subject id={subject_id} and its data")
@@ -276,6 +457,53 @@ def generate_from_upload():
     return redirect(url_for("app.generate_progress", job_id=job.job_id))
 
 
+@bp.post("/generate/track/from-all-pdfs")
+@login_required
+def generate_track_from_all_pdfs():
+    validate_csrf()
+    u = get_session_user()
+    assert u is not None
+
+    subject_id = _active_subject_id()
+    if subject_id is None:
+        flash("Select a subject first.", "danger")
+        return redirect(url_for("app.subject"))
+
+    files = get_uploaded_files(u.effective_user_id, subject_id)
+    if not files:
+        flash("Upload at least one PDF before generating a track.", "danger")
+        return redirect(url_for("app.subject"))
+
+    defaults = get_track_generation_defaults(u.effective_user_id, subject_id)
+    num_lessons = int(defaults.get("num_lessons") or 6)
+    cards_per_lesson = int(defaults.get("cards_per_lesson") or 12)
+
+    next_track_num = count_user_tracks(u.effective_user_id, subject_id) + 1
+    auto_title = f"Track {next_track_num}"
+
+    job = create_job()
+    session["last_generate_track_job_id"] = job.job_id
+
+    def do_work():
+        def on_progress(current: int, total: int, message: str):
+            update_job(job.job_id, current=int(current), total=int(total), message=message)
+
+        track_id = generate_track_from_subject_pdfs(
+            user_id=u.effective_user_id,
+            subject_id=subject_id,
+            title=auto_title,
+            num_lessons=num_lessons,
+            cards_per_lesson=cards_per_lesson,
+            on_progress=on_progress,
+        )
+        if u.is_impersonating:
+            admin_log(u.real_user_id, u.effective_user_id, f"Generated track {auto_title} (id={track_id})")
+        return {"track_id": track_id, "title": auto_title}
+
+    run_job(job.job_id, do_work)
+    return redirect(url_for("app.generate_track_progress", job_id=job.job_id))
+
+
 @bp.get("/generate/progress/<job_id>")
 @login_required
 def generate_progress(job_id: str):
@@ -283,6 +511,15 @@ def generate_progress(job_id: str):
     assert u is not None
     csrf = ensure_csrf_token()
     return render_template("app/generate_progress.html", csrf_token=csrf, user=u, job_id=job_id)
+
+
+@bp.get("/generate/track/progress/<job_id>")
+@login_required
+def generate_track_progress(job_id: str):
+    u = get_session_user()
+    assert u is not None
+    csrf = ensure_csrf_token()
+    return render_template("app/generate_track_progress.html", csrf_token=csrf, user=u, job_id=job_id)
 
 
 @bp.get("/generate/status/<job_id>")
@@ -315,7 +552,13 @@ def study():
         flash("Select a subject first.", "danger")
         return redirect(url_for("app.dashboard"))
 
-    due_cards = get_due_cards(subject_id, limit=200)
+    active_lesson_id = _active_lesson_id()
+    due_cards = get_due_cards(
+        subject_id,
+        limit=200,
+        user_id=u.effective_user_id,
+        lesson_id=active_lesson_id,
+    )
     due_cards = [c for c in due_cards if c.card_type != "multiple_choice"]
     if not due_cards:
         return render_template("app/study_done.html", csrf_token=csrf, user=u)
@@ -357,8 +600,48 @@ def study_grade():
     card_id = int(request.form.get("card_id") or 0)
     quality = int(request.form.get("quality") or 0)
     is_correct = quality >= 3
+
+    active_lesson_id = _active_lesson_id()
+    # Enforce lesson gating at write-time (prevents tampering with locked lesson card_ids).
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT 1
+        FROM cards c
+        JOIN subjects s ON c.subject_id = s.id
+        LEFT JOIN tracks t ON c.track_id = t.id
+        LEFT JOIN lessons l ON c.lesson_id = l.id
+        WHERE c.id = ?
+          AND s.user_id = ?
+          AND c.subject_id = ?
+          AND (? IS NULL OR c.lesson_id = ?)
+          AND (
+            c.track_id IS NULL
+            OR t.open_all = 1
+            OR l.lesson_index <= t.unlocked_lesson_index
+          )
+        """,
+        (card_id, u.effective_user_id, subject_id, active_lesson_id, active_lesson_id),
+    )
+    allowed_row = cur.fetchone()
+    conn.close()
+    if not allowed_row:
+        flash("This card is locked.", "danger")
+        return redirect(url_for("app.study"))
+
     newly_earned = record_attempt(card_id, subject_id, u.effective_user_id, is_correct, quality)
     update_card_schedule(card_id, quality)
+
+    # Unlock next lesson in any active track this card belongs to.
+    try:
+        track_lesson = get_card_track_lesson(card_id, u.effective_user_id)
+        if track_lesson is not None:
+            track_id, _lesson_id = track_lesson
+            maybe_unlock_next_lesson(user_id=u.effective_user_id, track_id=track_id)
+    except Exception:
+        # Don't break study flow on unlock computation issues.
+        pass
 
     _maybe_send_achievement_email(u, newly_earned)
 
@@ -367,7 +650,7 @@ def study_grade():
     return redirect(url_for("app.study"))
 
 
-def _quiz_items(subject_id: int, user_id: int):
+def _quiz_items(subject_id: int, user_id: int, *, lesson_id: int | None = None):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -375,12 +658,20 @@ def _quiz_items(subject_id: int, user_id: int):
         SELECT c.id, c.card_type, c.question, c.answer, c.source_pdf, c.page, c.subject_id, c.options
         FROM cards c
         JOIN subjects s ON c.subject_id = s.id
+        LEFT JOIN tracks t ON c.track_id = t.id
+        LEFT JOIN lessons l ON c.lesson_id = l.id
         WHERE c.subject_id = ?
           AND s.user_id = ?
-          AND c.card_type IN ('short_answer', 'fill_in_blank', 'multiple_choice')
+          AND c.card_type IN ('short_answer', 'fill_in_blank', 'multiple_choice', 'free_response', 'step_by_step', 'coding_task')
+          AND (? IS NULL OR c.lesson_id = ?)
+          AND (
+            c.track_id IS NULL
+            OR t.open_all = 1
+            OR l.lesson_index <= t.unlocked_lesson_index
+          )
         ORDER BY c.id ASC
         """,
-        (subject_id, user_id),
+        (subject_id, user_id, lesson_id, lesson_id),
     )
     rows = cur.fetchall()
     conn.close()
@@ -405,7 +696,8 @@ def quiz():
         flash("Select a subject first.", "danger")
         return redirect(url_for("app.dashboard"))
 
-    items = _quiz_items(subject_id, u.effective_user_id)
+    active_lesson_id = _active_lesson_id()
+    items = _quiz_items(subject_id, u.effective_user_id, lesson_id=active_lesson_id)
     if not items:
         return render_template("app/quiz_empty.html", csrf_token=csrf, user=u)
 
@@ -453,22 +745,91 @@ def quiz_check():
 
     card_id = int(request.form.get("card_id") or 0)
     user_answer = (request.form.get("user_answer") or "").strip()
-    correct_answer = (request.form.get("correct_answer") or "").strip()
-    card_type = request.form.get("card_type") or ""
+    if not user_answer:
+        return redirect(url_for("app.quiz"))
 
+    # Persist answer in session (used to keep form state when navigating).
     answers = session.get("quiz_answers") or {}
     answers[str(card_id)] = user_answer
     session["quiz_answers"] = answers
 
+    # Fetch card from DB to avoid relying on client-provided correct answers.
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT c.card_type, c.question, c.answer, c.options
+        FROM cards c
+        JOIN subjects s ON c.subject_id = s.id
+        LEFT JOIN tracks t ON c.track_id = t.id
+        LEFT JOIN lessons l ON c.lesson_id = l.id
+        WHERE c.id = ?
+          AND s.user_id = ?
+          AND c.subject_id = ?
+          AND (
+            c.track_id IS NULL
+            OR t.open_all = 1
+            OR l.lesson_index <= t.unlocked_lesson_index
+          )
+        """,
+        (card_id, u.effective_user_id, subject_id),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        flash("Question not found.", "danger")
+        return redirect(url_for("app.quiz"))
+
+    card_type = str(row[0])
+    question = str(row[1] or "")
+    correct_answer = str(row[2] or "")
+
     if card_type == "multiple_choice":
         is_correct = user_answer == correct_answer
-    else:
+        quality = 4 if is_correct else 2
+        feedback_text = "Correct!" if is_correct else "Incorrect."
+    elif card_type in ("short_answer", "fill_in_blank"):
         is_correct = user_answer.lower() == correct_answer.lower()
+        quality = 4 if is_correct else 2
+        feedback_text = "Correct!" if is_correct else "Incorrect."
+    else:
+        # Open-ended / coding-like exercises graded by LLM.
+        try:
+            grade = grade_exercise_answer(
+                card_type=card_type,
+                question=question,
+                expected_answer=correct_answer,
+                user_answer=user_answer,
+                timeout_s=180,
+            )
+            is_correct = bool(grade.get("is_correct", False))
+            quality = int(grade.get("quality", 0))
+            quality = max(0, min(5, quality))
+            feedback_text = str(grade.get("feedback") or "").strip()
+        except Exception:
+            is_correct = False
+            quality = 0
+            feedback_text = "Could not grade this answer automatically. Please try again."
 
-    quality = 4 if is_correct else 2
     newly_earned = record_attempt(card_id, subject_id, u.effective_user_id, is_correct, quality)
+    update_card_schedule(card_id, quality)
+
+    # Unlock next lesson in any active track this card belongs to.
+    try:
+        track_lesson = get_card_track_lesson(card_id, u.effective_user_id)
+        if track_lesson is not None:
+            track_id, _lesson_id = track_lesson
+            maybe_unlock_next_lesson(user_id=u.effective_user_id, track_id=track_id)
+    except Exception:
+        pass
+
     _maybe_send_achievement_email(u, newly_earned)
-    session["quiz_feedback"] = {"is_correct": is_correct, "correct_answer": correct_answer}
+
+    session["quiz_feedback"] = {
+        "is_correct": is_correct,
+        "correct_answer": correct_answer if card_type in ("multiple_choice", "short_answer", "fill_in_blank") else None,
+        "feedback_text": feedback_text,
+    }
     return redirect(url_for("app.quiz"))
 
 
@@ -514,7 +875,14 @@ def progress():
         SELECT c.id, c.card_type, c.question, c.answer, c.source_pdf, c.page, c.subject_id, c.options
         FROM cards c
         JOIN subjects s ON c.subject_id = s.id
+        LEFT JOIN tracks t ON c.track_id = t.id
+        LEFT JOIN lessons l ON c.lesson_id = l.id
         WHERE c.subject_id = ? AND s.user_id = ?
+          AND (
+            c.track_id IS NULL
+            OR t.open_all = 1
+            OR l.lesson_index <= t.unlocked_lesson_index
+          )
         ORDER BY c.id DESC
         """,
         (subject_id, u.effective_user_id),

@@ -1,0 +1,62 @@
+{% extends "layout.html" %}
+{% block content %}
+  <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
+    <div>
+      <h1 class="h4 mb-1">Lesson {{ lesson.lesson_index + 1 }}: {{ lesson.title }}</h1>
+      <div class="text-muted small">Read the lesson bite, then start practice.</div>
+    </div>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary" href="{{ url_for('app.track_view', track_id=track.id) }}">Back to track</a>
+    </div>
+  </div>
+
+  <div class="row g-3">
+    <div class="col-lg-7">
+      <div class="card shadow-sm">
+        <div class="card-body p-4">
+          <h2 class="h6 mb-3">Lesson bite</h2>
+          <div class="p-3 rounded border bg-white">
+            {{ lesson.bite_html|safe }}
+          </div>
+
+          {% if lesson.objectives %}
+            <div class="mt-3">
+              <div class="fw-semibold mb-2">You should learn</div>
+              <ul class="mb-0">
+                {% for obj in lesson.objectives %}
+                  <li>{{ obj }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-5">
+      <div class="card shadow-sm">
+        <div class="card-body p-4">
+          <h2 class="h6 mb-3">Next step</h2>
+          <div class="text-muted small mb-3">
+            Practice cards are gated to this lesson. Your answers update spaced repetition progress.
+          </div>
+
+          <form method="post" action="{{ url_for('app.track_lesson_start_study', track_id=track.id, lesson_id=lesson.id) }}" class="m-0">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn btn-primary w-100" type="submit">Start Study (cards)</button>
+          </form>
+
+          <form method="post" action="{{ url_for('app.track_lesson_start_quiz', track_id=track.id, lesson_id=lesson.id) }}" class="m-0 mt-2">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button class="btn btn-outline-secondary w-100" type="submit">Start Quiz (cards)</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="alert alert-warning mt-3">
+        Note: If you change lessons, the app will reset the practice index for that mode.
+      </div>
+    </div>
+  </div>
+{% endblock %}
+

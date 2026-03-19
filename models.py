@@ -1,7 +1,15 @@
 from dataclasses import dataclass
 from typing import Literal, Optional
 
-CardType = Literal["flashcard", "short_answer", "fill_in_blank", "multiple_choice"]
+CardType = Literal[
+    "flashcard",
+    "short_answer",
+    "fill_in_blank",
+    "multiple_choice",
+    "free_response",
+    "step_by_step",
+    "coding_task",
+]
 
 @dataclass
 class QAItem:

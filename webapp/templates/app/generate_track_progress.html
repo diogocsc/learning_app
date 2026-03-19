@@ -1,0 +1,62 @@
+{% extends "layout.html" %}
+{% block content %}
+  <div class="card shadow-sm">
+    <div class="card-body p-4">
+      <h1 class="h5 mb-2">Generating learning track…</h1>
+      <div class="text-muted small mb-3" id="statusText">Starting…</div>
+
+      <div class="progress mb-3" role="progressbar" aria-label="Generation progress">
+        <div class="progress-bar" id="progressBar" style="width: 0%"></div>
+      </div>
+
+      <div class="small text-muted" id="detailText"></div>
+
+      <div class="mt-4">
+        <a class="btn btn-outline-secondary" href="{{ url_for('app.tracks') }}">Back to tracks</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const jobId = {{ job_id|tojson }};
+    const statusUrl = {{ url_for('app.generate_status', job_id='__JOB__')|tojson }}.replace('__JOB__', jobId);
+
+    async function poll() {
+      try {
+        const res = await fetch(statusUrl, { headers: { "Accept": "application/json" } });
+        const data = await res.json();
+
+        const state = data.state || "running";
+        const current = Number(data.current || 0);
+        const total = Number(data.total || 0);
+        const message = data.message || "";
+
+        const pct = (total > 0) ? Math.min(100, Math.round((current / total) * 100)) : 0;
+
+        document.getElementById("statusText").textContent = message || (state === "done" ? "Done" : "Working…");
+        document.getElementById("detailText").textContent = (total > 0) ? `${current} / ${total} steps` : "";
+
+        const bar = document.getElementById("progressBar");
+        bar.style.width = pct + "%";
+        bar.textContent = pct + "%";
+
+        if (state === "done") {
+          window.location.href = {{ url_for('app.tracks')|tojson }};
+          return;
+        }
+
+        if (state === "error") {
+          document.getElementById("statusText").textContent = "Generation failed";
+          document.getElementById("detailText").textContent = data.error || "Unknown error";
+          bar.classList.add("bg-danger");
+          return;
+        }
+      } catch (e) {
+        // temporary network hiccup; keep polling
+      }
+      setTimeout(poll, 800);
+    }
+    poll();
+  </script>
+{% endblock %}
+

@@ -16,6 +16,7 @@
       <a class="btn btn-outline-secondary" href="{{ url_for('app.quiz') }}">Quiz</a>
       <a class="btn btn-outline-secondary" href="{{ url_for('app.progress') }}">Progress</a>
       <a class="btn btn-outline-secondary" href="{{ url_for('app.companion') }}">Companion</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('app.tracks') }}">Tracks</a>
     </div>
   </div>
 
@@ -142,6 +143,25 @@
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <input class="form-control" type="file" name="pdfs" accept="application/pdf" multiple required>
               <button class="btn btn-primary w-100 mt-2" type="submit">Upload</button>
+            </form>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="card shadow-sm mt-3">
+        <div class="card-body">
+          <h2 class="h6 mb-3">Generate Learning Track</h2>
+          {% if not current_subject_id %}
+            <div class="alert alert-warning mb-0">Select or create a subject first.</div>
+          {% elif not files %}
+            <div class="alert alert-warning mb-0">Upload at least one PDF to generate a track.</div>
+          {% else %}
+            <form method="post" action="{{ url_for('app.generate_track_from_all_pdfs') }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <button class="btn btn-primary w-100" type="submit" onclick="return confirm('Generate a learning track from ALL uploaded PDFs? This may take a few minutes.')">
+                Generate track from all PDFs
+              </button>
+              <div class="form-text mt-2">Lessons are gated; exercises are LLM-reviewed.</div>
             </form>
           {% endif %}
         </div>

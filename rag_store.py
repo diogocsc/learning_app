@@ -41,10 +41,36 @@ def save_index(user_id: int, subject_id: int, index, meta):
 
 def add_documents(user_id: int, subject_id: int, docs: list[str]):
     index, meta = load_or_create_index(user_id, subject_id)
-    emb = embed_text(docs)
-    index.add(emb)
-    meta.extend(docs)
+
+    # Embed+add in batches to avoid huge memory spikes for large PDFs.
+    batch_size = 64
+    for i in range(0, len(docs), batch_size):
+        batch = docs[i : i + batch_size]
+        if not batch:
+            continue
+        emb = embed_text(batch)
+        index.add(emb)
+        meta.extend(batch)
+
     save_index(user_id, subject_id, index, meta)
+
+
+def clear_index(user_id: int, subject_id: int) -> None:
+    """
+    Best-effort removal of the subject's persisted FAISS index + metadata.
+    Used for track generation, where we need deterministic chunk selection.
+    """
+    index_path, meta_path = _db_paths(user_id, subject_id)
+    if index_path.exists():
+        try:
+            index_path.unlink()
+        except OSError:
+            pass
+    if meta_path.exists():
+        try:
+            meta_path.unlink()
+        except OSError:
+            pass
 
 
 def retrieve(user_id: int, subject_id: int, query: str, k: int = 5):

@@ -1,0 +1,116 @@
+{% extends "layout.html" %}
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+    <div>
+      <h1 class="h4 mb-1">Admin · Tracks</h1>
+      <div class="text-muted small">Create learning tracks and open lessons for the current user.</div>
+    </div>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary" href="{{ url_for('admin.users') }}">Back to users</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('app.dashboard') }}">Back to app</a>
+    </div>
+  </div>
+
+  <div class="row g-3">
+    <div class="col-lg-5">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h2 class="h6 mb-3">Create a track</h2>
+          <form method="post" action="{{ url_for('admin.tracks_create') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label class="form-label small mb-1">Subject</label>
+            <select class="form-select mb-3" name="subject_id" required>
+              <option value="">Select subject</option>
+              {% for sid, name in subjects %}
+                <option value="{{ sid }}">{{ name }}</option>
+              {% endfor %}
+            </select>
+
+            <label class="form-label small mb-1">Track title</label>
+            <input class="form-control mb-3" name="title" placeholder="e.g. Transformers Essentials">
+
+            <label class="form-label small mb-1">Lessons (6–10)</label>
+            <input class="form-control mb-3" name="num_lessons" type="number" min="6" max="10" value="6" required>
+
+            <label class="form-label small mb-1">Cards per lesson (default 12)</label>
+            <input class="form-control mb-3" name="cards_per_lesson" type="number" min="1" max="50" value="12" required>
+
+            <button class="btn btn-primary w-100" type="submit">Generate track</button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-7">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h2 class="h6 mb-3">Existing tracks</h2>
+          {% if not tracks %}
+            <div class="text-muted">No tracks yet.</div>
+          {% else %}
+            <div class="vstack gap-3">
+              {% for t in tracks %}
+                <div class="border rounded p-3 bg-white">
+                  <div class="d-flex justify-content-between align-items-start gap-3">
+                    <div>
+                      <div class="fw-semibold">{{ t.title }}</div>
+                      <div class="text-muted small">{{ t.subject_name }}</div>
+                      <div class="text-muted small mt-1 font-mono">
+                        Lesson {{ t.unlocked_lesson_index + 1 }} / {{ t.num_lessons }} {% if t.open_all %}(open all){% endif %}
+                      </div>
+                    </div>
+                    <div class="text-end">
+                      {% if not t.open_all %}
+                        <form method="post" action="{{ url_for('admin.tracks_open_all', track_id=t.id) }}">
+                          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                          <button class="btn btn-sm btn-outline-warning" type="submit">Open all lessons</button>
+                        </form>
+                      {% else %}
+                        <span class="badge text-bg-light font-mono">all unlocked</span>
+                      {% endif %}
+                    </div>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% endif %}
+
+          <hr class="my-4">
+
+          <h2 class="h6 mb-3">Admin bulk action</h2>
+          <div class="text-muted small mb-2">Unlocks all lessons for all users (optionally scoped to a subject).</div>
+          <form method="post" action="{{ url_for('admin.tracks_open_all_all') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <label class="form-label small mb-1">Subject (optional)</label>
+            <select class="form-select mb-3" name="subject_id">
+              <option value="">All subjects</option>
+              {% for sid, name in subjects %}
+                <option value="{{ sid }}">{{ name }}</option>
+              {% endfor %}
+            </select>
+            <button class="btn btn-outline-warning w-100" type="submit" onclick="return confirm('Open all lessons for all users?')">
+              Open all lessons for all users
+            </button>
+          </form>
+
+          <div class="mt-3">
+            <form method="post" action="{{ url_for('admin.tracks_gate_all_all') }}">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <label class="form-label small mb-1">Subject (optional)</label>
+              <select class="form-select mb-3" name="subject_id">
+                <option value="">All subjects</option>
+                {% for sid, name in subjects %}
+                  <option value="{{ sid }}">{{ name }}</option>
+                {% endfor %}
+              </select>
+              <button class="btn btn-outline-secondary w-100" type="submit" onclick="return confirm('Re-apply gating: lock lessons again except those already mastered?')">
+                Gate lessons again (mastered only)
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}
+

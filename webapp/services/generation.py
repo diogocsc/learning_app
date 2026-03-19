@@ -22,7 +22,13 @@ JSON schema:
 {
   "items": [
     {
-      "card_type": "flashcard" | "short_answer" | "fill_in_blank" | "multiple_choice",
+      "card_type": "flashcard"
+                  | "short_answer"
+                  | "fill_in_blank"
+                  | "multiple_choice"
+                  | "free_response"
+                  | "step_by_step"
+                  | "coding_task",
       "question": "string",
       "answer": "string",
       "options": ["A", "B", "C", "D"] | null
@@ -36,7 +42,7 @@ Rules:
   - Provide 3 to 5 options in "options".
   - Exactly ONE option must be correct.
   - "answer" must contain the full text of the correct option (not just the letter).
-- For flashcard, short_answer, and fill_in_blank, set "options" to null.
+- For flashcard, short_answer, fill_in_blank, free_response, step_by_step, and coding_task, set "options" to null.
 """.strip()
 
 
@@ -121,7 +127,7 @@ def generate_cards_from_chunk(
     existing_norm_questions: List[str],
 ) -> List[QAItem]:
     retrieved_context = retrieve(user_id=user_id, subject_id=subject_id, query=chunk_text, k=5)
-    context_text = "\n\n".join(retrieved_context)
+    context_text = "\n\n".join([c.get("text") if isinstance(c, dict) else str(c) for c in retrieved_context])
 
     user_prompt = f"""
 Context (retrieved from knowledge base):
@@ -135,6 +141,9 @@ Create up to {max_items_for_this_chunk} items in total:
 - Short-answer questions
 - Fill-in-the-blank questions (use '___' where the blank should be).
 - Multiple-choice questions (3–5 options, exactly one correct).
+- Free-response questions (long answers)
+- Step-by-step problems (structured reasoning)
+- Coding tasks (with a code answer)
 
 Rules:
 - Focus on the most important concepts and knowledge, not formatting or metadata.
@@ -169,7 +178,15 @@ Return only JSON in the schema specified.
         answer = item.get("answer")
         options = item.get("options")
 
-        if card_type not in ("flashcard", "short_answer", "fill_in_blank", "multiple_choice"):
+        if card_type not in (
+            "flashcard",
+            "short_answer",
+            "fill_in_blank",
+            "multiple_choice",
+            "free_response",
+            "step_by_step",
+            "coding_task",
+        ):
             continue
         if not question or not answer:
             continue

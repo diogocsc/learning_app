@@ -71,6 +71,42 @@ def init_db():
         """
     )
 
+    # Tracks & lessons (curriculum gating)
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tracks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            subject_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            num_lessons INTEGER NOT NULL,
+            cards_per_lesson INTEGER NOT NULL,
+            unlocked_lesson_index INTEGER NOT NULL DEFAULT 0,
+            open_all INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(id),
+            FOREIGN KEY(subject_id) REFERENCES subjects(id)
+        );
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS lessons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id INTEGER NOT NULL,
+            lesson_index INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            objectives TEXT NOT NULL DEFAULT '[]', -- JSON encoded list[str]
+            anchor_queries TEXT NOT NULL DEFAULT '[]', -- JSON encoded list[str]
+            brief TEXT,
+            bite_markdown TEXT,
+            UNIQUE(track_id, lesson_index),
+            FOREIGN KEY(track_id) REFERENCES tracks(id)
+        );
+        """
+    )
+
     # Cards with SRS fields
     cursor.execute(
         """
@@ -82,6 +118,8 @@ def init_db():
             source_pdf TEXT NOT NULL,
             page INTEGER NOT NULL,
             subject_id INTEGER NOT NULL,
+            track_id INTEGER,
+            lesson_id INTEGER,
             options TEXT, -- JSON list for MCQ, NULL otherwise
 
             -- Spaced repetition fields
@@ -96,6 +134,20 @@ def init_db():
         );
         """
     )
+
+    # Backfill `cards.track_id` / `cards.lesson_id` if DB predates them.
+    cursor.execute("PRAGMA table_info(cards)")
+    cols = {r[1] for r in cursor.fetchall()}
+    if "track_id" not in cols:
+        cursor.execute("ALTER TABLE cards ADD COLUMN track_id INTEGER;")
+    if "lesson_id" not in cols:
+        cursor.execute("ALTER TABLE cards ADD COLUMN lesson_id INTEGER;")
+
+    # Backfill `lessons.bite_markdown` if DB predates it.
+    cursor.execute("PRAGMA table_info(lessons)")
+    lesson_cols = {r[1] for r in cursor.fetchall()}
+    if "bite_markdown" not in lesson_cols:
+        cursor.execute("ALTER TABLE lessons ADD COLUMN bite_markdown TEXT;")
 
     # Attempts history (for progress stats), per user
     cursor.execute(
@@ -213,6 +265,22 @@ def init_db():
             code TEXT NOT NULL,
             earned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (user_id, subject_id, code),
+            FOREIGN KEY(user_id) REFERENCES users(id),
+            FOREIGN KEY(subject_id) REFERENCES subjects(id)
+        );
+        """
+    )
+
+    # Default track generation settings used by normal users
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS track_generation_defaults (
+            user_id INTEGER NOT NULL,
+            subject_id INTEGER NOT NULL,
+            num_lessons INTEGER NOT NULL DEFAULT 6,
+            cards_per_lesson INTEGER NOT NULL DEFAULT 12,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (user_id, subject_id),
             FOREIGN KEY(user_id) REFERENCES users(id),
             FOREIGN KEY(subject_id) REFERENCES subjects(id)
         );
@@ -894,20 +962,52 @@ def update_card_schedule(card_id: int, quality: int):
     conn.close()
 
 
-def get_due_cards(subject_id: int, limit: int = 100) -> List[QAItem]:
+def get_due_cards(
+    subject_id: int,
+    limit: int = 100,
+    *,
+    user_id: Optional[int] = None,
+    lesson_id: Optional[int] = None,
+) -> List[QAItem]:
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT id, card_type, question, answer, source_pdf, page, subject_id, options
-        FROM cards
-        WHERE subject_id = ?
-          AND DATE(due_date) <= DATE('now')
-        ORDER BY due_date ASC, id ASC
-        LIMIT ?
-        """,
-        (subject_id, limit),
-    )
+
+    if user_id is None and lesson_id is None:
+        cursor.execute(
+            """
+            SELECT id, card_type, question, answer, source_pdf, page, subject_id, options
+            FROM cards
+            WHERE subject_id = ?
+              AND DATE(due_date) <= DATE('now')
+            ORDER BY due_date ASC, id ASC
+            LIMIT ?
+            """,
+            (subject_id, limit),
+        )
+    else:
+        # When user_id is provided, filter out gated track cards (unless unlocked).
+        # When lesson_id is provided, additionally restrict to that lesson.
+        cursor.execute(
+            """
+            SELECT c.id, c.card_type, c.question, c.answer, c.source_pdf, c.page, c.subject_id, c.options
+            FROM cards c
+            JOIN subjects s ON c.subject_id = s.id
+            LEFT JOIN tracks t ON c.track_id = t.id
+            LEFT JOIN lessons l ON c.lesson_id = l.id
+            WHERE s.user_id = ?
+              AND c.subject_id = ?
+              AND DATE(c.due_date) <= DATE('now')
+              AND (? IS NULL OR c.lesson_id = ?)
+              AND (
+                c.track_id IS NULL
+                OR t.open_all = 1
+                OR l.lesson_index <= t.unlocked_lesson_index
+              )
+            ORDER BY c.due_date ASC, c.id ASC
+            LIMIT ?
+            """,
+            (user_id, subject_id, lesson_id, lesson_id, limit),
+        )
     rows = cursor.fetchall()
     conn.close()
 
@@ -962,7 +1062,7 @@ def get_card_stats(card_id: int, user_id: int):
     return total or 0, correct or 0
 
 
-def insert_card(card: QAItem):
+def insert_card(card: QAItem, *, track_id: Optional[int] = None, lesson_id: Optional[int] = None):
     conn = get_connection()
     cursor = conn.cursor()
     options_json = json.dumps(card.options) if card.options is not None else None
@@ -970,9 +1070,10 @@ def insert_card(card: QAItem):
         """
         INSERT INTO cards (
             card_type, question, answer, source_pdf, page, subject_id,
+            track_id, lesson_id,
             options, ef, interval, repetitions, due_date, last_review, lapse_count
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             card.card_type,
@@ -981,6 +1082,8 @@ def insert_card(card: QAItem):
             card.source_pdf,
             card.page,
             card.subject_id,
+            track_id,
+            lesson_id,
             options_json,
             2.5,  # ef default
             0,    # interval
@@ -1042,6 +1145,517 @@ def load_all_cards(user_id: Optional[int] = None) -> List[QAItem]:
             )
         )
     return cards
+
+
+# ---------- Tracks & lesson gating ----------
+
+def create_track(
+    *,
+    user_id: int,
+    subject_id: int,
+    title: str,
+    num_lessons: int,
+    cards_per_lesson: int,
+) -> int:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO tracks (user_id, subject_id, title, num_lessons, cards_per_lesson, unlocked_lesson_index, open_all)
+        VALUES (?, ?, ?, ?, ?, 0, 0)
+        """,
+        (user_id, subject_id, title, int(num_lessons), int(cards_per_lesson)),
+    )
+    track_id = int(cursor.lastrowid)
+    conn.commit()
+    conn.close()
+    return track_id
+
+
+def insert_lesson(
+    *,
+    track_id: int,
+    lesson_index: int,
+    title: str,
+    objectives: list[str],
+    anchor_queries: list[str],
+    brief: Optional[str] = None,
+    bite_markdown: Optional[str] = None,
+) -> int:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO lessons (track_id, lesson_index, title, objectives, anchor_queries, brief, bite_markdown)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (track_id, int(lesson_index), title, json.dumps(objectives), json.dumps(anchor_queries), brief, bite_markdown),
+    )
+    lesson_id = int(cursor.lastrowid)
+    conn.commit()
+    conn.close()
+    return lesson_id
+
+
+def get_tracks(user_id: int) -> List[dict]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT t.id, t.title, t.subject_id, s.name, t.num_lessons, t.cards_per_lesson, t.unlocked_lesson_index, t.open_all, t.created_at
+        FROM tracks t
+        JOIN subjects s ON t.subject_id = s.id
+        WHERE t.user_id = ?
+        ORDER BY t.created_at DESC, t.id DESC
+        """,
+        (user_id,),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [
+        {
+            "id": r[0],
+            "title": r[1],
+            "subject_id": r[2],
+            "subject_name": r[3],
+            "num_lessons": r[4],
+            "cards_per_lesson": r[5],
+            "unlocked_lesson_index": r[6],
+            "open_all": bool(r[7]),
+            "created_at": r[8],
+        }
+        for r in rows
+    ]
+
+
+def get_track(user_id: int, track_id: int) -> Optional[dict]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT t.id, t.title, t.subject_id, s.name, t.num_lessons, t.cards_per_lesson, t.unlocked_lesson_index, t.open_all, t.created_at
+        FROM tracks t
+        JOIN subjects s ON t.subject_id = s.id
+        WHERE t.user_id = ? AND t.id = ?
+        """,
+        (user_id, track_id),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "id": row[0],
+        "title": row[1],
+        "subject_id": row[2],
+        "subject_name": row[3],
+        "num_lessons": int(row[4]),
+        "cards_per_lesson": int(row[5]),
+        "unlocked_lesson_index": int(row[6]),
+        "open_all": bool(row[7]),
+        "created_at": row[8],
+    }
+
+
+def get_lessons(user_id: int, track_id: int) -> List[dict]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT l.id, l.lesson_index, l.title, l.objectives, l.anchor_queries, l.brief, l.bite_markdown, t.unlocked_lesson_index, t.open_all
+        FROM lessons l
+        JOIN tracks t ON l.track_id = t.id
+        WHERE t.user_id = ? AND t.id = ?
+        ORDER BY l.lesson_index ASC
+        """,
+        (user_id, track_id),
+    )
+    rows = cur.fetchall()
+    conn.close()
+    if not rows:
+        return []
+    unlocked = int(rows[0][7] or 0)
+    open_all = bool(rows[0][8])
+    out = []
+    for r in rows:
+        lesson_id, lesson_index, title, objectives_json, anchor_json, brief, bite_markdown = r[0:7]
+        try:
+            objectives = json.loads(objectives_json) if objectives_json else []
+        except json.JSONDecodeError:
+            objectives = []
+        try:
+            anchor_queries = json.loads(anchor_json) if anchor_json else []
+        except json.JSONDecodeError:
+            anchor_queries = []
+        is_unlocked = open_all or int(lesson_index) <= unlocked
+        out.append(
+            {
+                "id": int(lesson_id),
+                "lesson_index": int(lesson_index),
+                "title": str(title),
+                "objectives": objectives,
+                "anchor_queries": anchor_queries,
+                "brief": brief,
+                "bite_markdown": bite_markdown,
+                "is_unlocked": is_unlocked,
+            }
+        )
+    return out
+
+
+def get_track_generation_defaults(user_id: int, subject_id: int) -> Dict[str, int]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT num_lessons, cards_per_lesson
+        FROM track_generation_defaults
+        WHERE user_id = ? AND subject_id = ?
+        """,
+        (user_id, subject_id),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return {"num_lessons": 6, "cards_per_lesson": 12}
+    return {"num_lessons": int(row[0] or 6), "cards_per_lesson": int(row[1] or 12)}
+
+
+def set_track_generation_defaults(user_id: int, subject_id: int, *, num_lessons: int, cards_per_lesson: int) -> None:
+    num_lessons = max(6, min(int(num_lessons), 10))
+    cards_per_lesson = max(1, min(int(cards_per_lesson), 50))
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO track_generation_defaults (user_id, subject_id, num_lessons, cards_per_lesson)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_id, subject_id) DO UPDATE SET
+            num_lessons=excluded.num_lessons,
+            cards_per_lesson=excluded.cards_per_lesson,
+            updated_at=CURRENT_TIMESTAMP
+        """,
+        (user_id, subject_id, num_lessons, cards_per_lesson),
+    )
+    conn.commit()
+    conn.close()
+
+
+def count_user_tracks(user_id: int, subject_id: int) -> int:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT COUNT(*) FROM tracks WHERE user_id = ? AND subject_id = ?",
+        (user_id, subject_id),
+    )
+    row = cur.fetchone()
+    conn.close()
+    return int(row[0] or 0)
+
+
+def delete_track_for_user(*, user_id: int, track_id: int) -> bool:
+    """
+    Deletes:
+      - lessons under the track
+      - cards tagged with the track
+      - card_attempts for those cards
+      - the track row
+    Returns True if deleted, False if not found / not owned.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT id FROM tracks WHERE id = ? AND user_id = ?", (track_id, user_id))
+    if not cur.fetchone():
+        conn.close()
+        return False
+
+    # Cards for this track (used to delete attempts first).
+    cur.execute("SELECT id FROM cards WHERE track_id = ?", (track_id,))
+    card_rows = cur.fetchall()
+    card_ids = [r[0] for r in card_rows]
+
+    # Delete attempts for the cards (if any)
+    if card_ids:
+        placeholders = ",".join("?" * len(card_ids))
+        cur.execute(f"DELETE FROM card_attempts WHERE card_id IN ({placeholders})", card_ids)
+
+    # Delete cards
+    cur.execute("DELETE FROM cards WHERE track_id = ?", (track_id,))
+
+    # Delete lessons
+    cur.execute("DELETE FROM lessons WHERE track_id = ?", (track_id,))
+
+    # Delete track
+    cur.execute("DELETE FROM tracks WHERE id = ? AND user_id = ?", (track_id, user_id))
+
+    conn.commit()
+    conn.close()
+    return True
+
+
+def set_open_all_for_all_tracks(*, user_id: Optional[int] = None, subject_id: Optional[int] = None) -> int:
+    """
+    Bulk admin operation:
+    - Sets `tracks.open_all=1` for matching tracks.
+    - Sets `unlocked_lesson_index` to `num_lessons-1`.
+    - Returns count of affected rows.
+
+    Optional filters:
+      - user_id: only tracks belonging to this user
+      - subject_id: only tracks for this subject
+    If neither is provided, applies to all tracks.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    where = []
+    params: list[object] = []
+    if user_id is not None:
+        where.append("user_id = ?")
+        params.append(int(user_id))
+    if subject_id is not None:
+        where.append("subject_id = ?")
+        params.append(int(subject_id))
+
+    where_sql = ""
+    if where:
+        where_sql = "WHERE " + " AND ".join(where)
+
+    cur.execute(
+        f"""
+        UPDATE tracks
+        SET open_all = 1,
+            unlocked_lesson_index = CASE
+                WHEN num_lessons > 0 THEN (num_lessons - 1)
+                ELSE 0
+            END
+        {where_sql}
+        """,
+        params,
+    )
+    changed = int(cur.rowcount or 0)
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def gate_all_lessons_for_all_users(*, user_id: Optional[int] = None, subject_id: Optional[int] = None) -> int:
+    """
+    Bulk admin operation:
+    - Sets `tracks.open_all=0` (remove admin override).
+    - Recomputes `tracks.unlocked_lesson_index` for each track based on current card mastery.
+
+    A lesson is considered "passed" when:
+      mastered_cards >= threshold(total_cards)
+    where threshold(total_cards) matches the same logic used by unlocking.
+    Unlocking is sequential: lesson N unlocks only if all lessons < N are passed.
+
+    Returns count of tracks updated.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    where = []
+    params: list[object] = []
+    if user_id is not None:
+        where.append("t.user_id = ?")
+        params.append(int(user_id))
+    if subject_id is not None:
+        where.append("t.subject_id = ?")
+        params.append(int(subject_id))
+
+    where_sql = ""
+    if where:
+        where_sql = "WHERE " + " AND ".join(where)
+
+    cur.execute(
+        f"""
+        SELECT t.id, t.num_lessons
+        FROM tracks t
+        {where_sql}
+        """,
+        params,
+    )
+    track_rows = cur.fetchall()
+
+    updated = 0
+    for track_id, num_lessons in track_rows:
+        num_lessons = int(num_lessons or 0)
+        if num_lessons <= 0:
+            # Keep as locked.
+            cur.execute(
+                "UPDATE tracks SET open_all=0, unlocked_lesson_index=0 WHERE id=?",
+                (int(track_id),),
+            )
+            updated += 1
+            continue
+
+        unlocked_idx = 0
+        # sequentially check passed lessons
+        for lesson_idx in range(num_lessons):
+            cur.execute(
+                "SELECT id FROM lessons WHERE track_id = ? AND lesson_index = ?",
+                (int(track_id), lesson_idx),
+            )
+            lesson_row = cur.fetchone()
+            if not lesson_row:
+                break
+            lesson_id = int(lesson_row[0])
+
+            cur.execute("SELECT COUNT(*) FROM cards WHERE track_id=? AND lesson_id=?", (int(track_id), lesson_id))
+            total_cards = int(cur.fetchone()[0] or 0)
+            if total_cards <= 0:
+                break
+
+            cur.execute(
+                "SELECT COUNT(*) FROM cards WHERE track_id=? AND lesson_id=? AND repetitions >= 2",
+                (int(track_id), lesson_id),
+            )
+            mastered_cards = int(cur.fetchone()[0] or 0)
+
+            threshold = _get_track_mastery_threshold(total_cards)
+            if mastered_cards < threshold:
+                break
+
+            unlocked_idx = lesson_idx
+
+        cur.execute(
+            "UPDATE tracks SET open_all=0, unlocked_lesson_index=? WHERE id=?",
+            (unlocked_idx, int(track_id)),
+        )
+        updated += 1
+
+    conn.commit()
+    conn.close()
+    return updated
+
+
+def set_track_open_all(user_id: int, track_id: int, *, open_all: bool) -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+    if open_all:
+        cur.execute(
+            """
+            UPDATE tracks
+            SET open_all=1,
+                unlocked_lesson_index = CASE WHEN num_lessons > 0 THEN (num_lessons - 1) ELSE 0 END
+            WHERE id=? AND user_id=?
+            """,
+            (track_id, user_id),
+        )
+    else:
+        cur.execute(
+            """
+            UPDATE tracks
+            SET open_all=0
+            WHERE id=? AND user_id=?
+            """,
+            (track_id, user_id),
+        )
+    conn.commit()
+    changed = cur.rowcount > 0
+    conn.close()
+    return bool(changed)
+
+
+def _get_track_mastery_threshold(total_cards: int) -> int:
+    # Unlock when a lesson is "mostly mastered".
+    # With 12 cards/lesson, this yields: max(3, int(12*0.6)=7) => 7 mastered cards.
+    if total_cards <= 0:
+        return 0
+    return min(total_cards, max(3, int(total_cards * 0.6)))
+
+
+def maybe_unlock_next_lesson(*, user_id: int, track_id: int) -> int:
+    """
+    If the currently-unlocked lesson is sufficiently mastered, unlock the next one.
+    Returns the (possibly updated) unlocked_lesson_index.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT unlocked_lesson_index, open_all, num_lessons
+        FROM tracks
+        WHERE user_id = ? AND id = ?
+        """,
+        (user_id, track_id),
+    )
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return 0
+    unlocked_idx = int(row[0] or 0)
+    open_all = bool(row[1])
+    num_lessons = int(row[2] or 0)
+
+    if open_all or unlocked_idx >= max(0, num_lessons - 1):
+        conn.close()
+        return unlocked_idx
+
+    # Unlock multiple lessons if the user is already far ahead.
+    while unlocked_idx < max(0, num_lessons - 1):
+        cur.execute(
+            "SELECT id FROM lessons WHERE track_id = ? AND lesson_index = ?",
+            (track_id, unlocked_idx),
+        )
+        lesson_row = cur.fetchone()
+        if not lesson_row:
+            break
+        lesson_id = int(lesson_row[0])
+
+        cur.execute(
+            "SELECT COUNT(*) FROM cards WHERE track_id = ? AND lesson_id = ?",
+            (track_id, lesson_id),
+        )
+        total_cards = int(cur.fetchone()[0] or 0)
+        if total_cards <= 0:
+            break
+
+        cur.execute(
+            "SELECT COUNT(*) FROM cards WHERE track_id = ? AND lesson_id = ? AND repetitions >= 2",
+            (track_id, lesson_id),
+        )
+        mastered_cards = int(cur.fetchone()[0] or 0)
+        threshold = _get_track_mastery_threshold(total_cards)
+
+        if mastered_cards < threshold:
+            break
+
+        unlocked_idx += 1
+
+    if unlocked_idx != int(row[0] or 0):
+        cur.execute(
+            "UPDATE tracks SET unlocked_lesson_index = ? WHERE user_id = ? AND id = ?",
+            (unlocked_idx, user_id, track_id),
+        )
+    conn.commit()
+    conn.close()
+    return unlocked_idx
+
+
+def get_card_track_lesson(card_id: int, user_id: int) -> Optional[tuple[int, int]]:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT c.track_id, c.lesson_id
+        FROM cards c
+        JOIN subjects s ON c.subject_id = s.id
+        WHERE c.id = ? AND s.user_id = ?
+        """,
+        (card_id, user_id),
+    )
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    track_id, lesson_id = row
+    if track_id is None or lesson_id is None:
+        return None
+    return int(track_id), int(lesson_id)
 
 
 def add_subject(name: str, user_id: int):

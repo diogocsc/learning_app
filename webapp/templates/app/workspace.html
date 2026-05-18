@@ -16,83 +16,58 @@
       <a class="btn btn-outline-secondary" href="{{ url_for('app.quiz') }}">Quiz</a>
       <a class="btn btn-outline-secondary" href="{{ url_for('app.progress') }}">Progress</a>
       <a class="btn btn-outline-secondary" href="{{ url_for('app.companion') }}">Companion</a>
-      <a class="btn btn-outline-secondary" href="{{ url_for('app.tracks') }}">Tracks</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('app.achievements') }}">Achievements</a>
     </div>
   </div>
 
-  {% if game %}
-    <div class="row g-3 mb-3">
-      <div class="col-lg-6">
-        <div class="card shadow-sm">
-          <div class="card-body">
-            <div class="d-flex justify-content-between align-items-center">
-              <div>
-                <div class="text-muted small">Daily goal</div>
-                <div class="fw-semibold">Attempts today: {{ game.attempts_today }} / {{ game.goal_attempts }}</div>
-                <div class="text-muted small">XP today: {{ game.xp_today }} · Correct: {{ game.correct_today }}</div>
-              </div>
-              <div class="text-end">
-                <div class="badge text-bg-light font-mono">🔥 {{ game.streak }} streak</div>
-              </div>
-            </div>
-            <div class="progress mt-3">
-              {% set pct = (100 * game.attempts_today / game.goal_attempts) if game.goal_attempts else 0 %}
-              <div class="progress-bar" style="width: {{ 100 if pct>100 else pct }}%"></div>
-            </div>
-          </div>
-        </div>
+  <div class="mb-3">
+    <div class="d-flex justify-content-between align-items-end flex-wrap gap-2 mb-2">
+      <div>
+        <h2 class="h5 mb-1">Tracks</h2>
+        <div class="text-muted small">Learning paths with gated lessons and exercises.</div>
       </div>
-      <div class="col-lg-6">
-        <div class="card shadow-sm">
-          <div class="card-body">
-            <div class="text-muted small">Current level</div>
-            <div class="fw-semibold">Level {{ game.level }} · {{ game.xp }} XP</div>
-            {% if game.subject and current_subject_id %}
-              <div class="text-muted small mt-2">Subject level</div>
-              <div class="fw-semibold">Level {{ game.subject.level }} · {{ game.subject.xp }} XP</div>
-              <div class="text-muted small mt-2">Subject mastery</div>
-              <div class="fw-semibold">{{ game.subject.mastery_pct }}% · {{ game.subject.mastered_cards }}/{{ game.subject.total_cards }} cards</div>
-              <div class="progress mt-2">
-                <div class="progress-bar" style="width: {{ game.subject.mastery_pct }}%"></div>
-              </div>
-            {% endif %}
-          </div>
-        </div>
-      </div>
+      <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('app.tracks') }}">All tracks</a>
     </div>
-  {% endif %}
 
-  {% if achievements_catalog and earned %}
-    <div class="card shadow-sm mb-3">
-      <div class="card-body">
-        <div class="d-flex justify-content-between align-items-center">
-          <div>
-            <div class="text-muted small">Badges & achievements</div>
-            <div class="fw-semibold">Unlock rewards by showing up and staying accurate.</div>
-          </div>
-        </div>
-        <div class="row g-2 mt-2">
-          {% for a in achievements_catalog %}
-            {% set earned_now = (a.scope == 'user' and a.code in earned.user) or (a.scope == 'subject' and a.code in earned.subject) %}
-            <div class="col-12 col-md-6 col-lg-4">
-              <div class="border rounded p-3 {% if earned_now %}bg-white{% else %}bg-light{% endif %}">
-                <div class="d-flex justify-content-between">
-                  <div class="fw-semibold">{{ a.icon }} {{ a.name }}</div>
-                  {% if earned_now %}
-                    <span class="badge text-bg-light font-mono">earned</span>
-                  {% else %}
-                    <span class="badge text-bg-light font-mono">locked</span>
-                  {% endif %}
+    {% if not tracks %}
+      <div class="alert alert-warning mb-0">No tracks yet.</div>
+    {% else %}
+      <div class="row g-3">
+        {% for t in tracks %}
+          <div class="col-lg-6">
+            <div class="card shadow-sm h-100">
+              <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start gap-2">
+                  <div>
+                    <div class="fw-semibold">{{ t.title }}</div>
+                    <div class="text-muted small mt-1">{{ t.subject_name }}</div>
+                  </div>
+                  <span class="badge text-bg-light font-mono">
+                    Lesson {{ t.unlocked_lesson_index + 1 }} / {{ t.num_lessons }}
+                  </span>
                 </div>
-                <div class="text-muted small mt-1">{{ a.description }}</div>
-                <div class="text-muted small font-mono mt-1">{{ a.scope }}</div>
+
+                <div class="progress mt-3">
+                  {% set pct = (100 * (t.unlocked_lesson_index + 1) / t.num_lessons) if t.num_lessons else 0 %}
+                  <div class="progress-bar" style="width: {{ pct }}%"></div>
+                </div>
+
+                <div class="d-flex gap-2 mt-3">
+                  <a class="btn btn-primary" href="{{ url_for('app.track_view', track_id=t.id) }}">Open</a>
+                  <form method="post" action="{{ url_for('app.tracks_delete', track_id=t.id) }}" class="m-0">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button class="btn btn-outline-danger" type="submit" onclick="return confirm('Delete this track and all its lessons/exercises?')">
+                      Delete
+                    </button>
+                  </form>
+                </div>
               </div>
             </div>
-          {% endfor %}
-        </div>
+          </div>
+        {% endfor %}
       </div>
-    </div>
-  {% endif %}
+    {% endif %}
+  </div>
 
   <div class="row g-3">
     <div class="col-lg-4">

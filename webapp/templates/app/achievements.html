@@ -1,0 +1,34 @@
+{% extends "layout.html" %}
+{% block content %}
+  <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-3">
+    <div>
+      <h1 class="h4 mb-1">Badges & achievements</h1>
+      <div class="text-muted small">Unlock rewards by showing up and staying accurate.</div>
+    </div>
+    <div class="d-flex gap-2">
+      <a class="btn btn-outline-secondary" href="{{ url_for('app.dashboard') }}">Back to dashboard</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('app.tracks') }}">Tracks</a>
+    </div>
+  </div>
+
+  {% if achievements_catalog and earned %}
+    <div class="row g-2">
+      {% for a in achievements_catalog %}
+        {% set earned_now = (a.scope == 'user' and a.code in earned.user) or (a.scope == 'subject' and a.code in earned.subject) %}
+        <div class="col-12 col-md-6 col-lg-4">
+          <div class="border rounded p-3 {% if earned_now %}bg-white{% else %}bg-light{% endif %}">
+            <div class="d-flex justify-content-between">
+              <div class="fw-semibold">{{ a.icon }} {{ a.name }}</div>
+              <span class="badge text-bg-light font-mono">{{ 'earned' if earned_now else 'locked' }}</span>
+            </div>
+            <div class="text-muted small mt-1">{{ a.description }}</div>
+            <div class="text-muted small font-mono mt-1">{{ a.scope }}</div>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="alert alert-warning">No achievements found.</div>
+  {% endif %}
+{% endblock %}
+

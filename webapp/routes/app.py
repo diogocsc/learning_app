@@ -91,6 +91,10 @@ def dashboard():
     files = get_uploaded_files(u.effective_user_id, subject_id) if subject_id else []
     due_cards = get_due_cards(subject_id, limit=200, user_id=u.effective_user_id) if subject_id else []
     due_cards = [c for c in due_cards if c.card_type != "multiple_choice"]
+    all_tracks = get_tracks(u.effective_user_id)
+    tracks = [t for t in all_tracks if subject_id is None or t["subject_id"] == subject_id]
+    # Keep the dashboard minimalist; the full list lives on `/tracks`.
+    tracks = tracks[:6]
     return render_template(
         "app/workspace.html",
         csrf_token=csrf,
@@ -99,6 +103,7 @@ def dashboard():
         current_subject_id=subject_id,
         files=files,
         due_count=len(due_cards),
+        tracks=tracks,
     )
 
 
@@ -110,6 +115,15 @@ def tracks():
     csrf = ensure_csrf_token()
     user_tracks = get_tracks(u.effective_user_id)
     return render_template("app/tracks.html", csrf_token=csrf, user=u, tracks=user_tracks)
+
+
+@bp.get("/achievements")
+@login_required
+def achievements():
+    u = get_session_user()
+    assert u is not None
+    csrf = ensure_csrf_token()
+    return render_template("app/achievements.html", csrf_token=csrf, user=u)
 
 
 @bp.post("/tracks/<int:track_id>/delete")
